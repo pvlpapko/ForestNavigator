@@ -778,13 +778,23 @@ private fun OfflineScreen(vm: AppViewModel) {
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf(2.0, 5.0, 10.0).forEach { r ->
+                listOf(2.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { r ->
                     FilterChip(
                         selected = radius == r,
                         onClick = { radius = r },
                         label = { Text("${r.toInt()} км") }
                     )
                 }
+            }
+
+            if (radius >= 50.0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Большая область: загрузка может занять заметно больше времени и места. " +
+                        "Для 50–100 км приложение автоматически снижает максимальный масштаб, чтобы размер оставался разумным.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Spacer(Modifier.height(10.dp))
