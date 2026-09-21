@@ -77,9 +77,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "HD: MapTiler Satellite v4"
-                                MapLayer.TERRAIN -> "HD: MapTiler Outdoor v4 • изолинии и походные детали"
-                                MapLayer.SATELLITE_TERRAIN -> "HD: спутник + Terrain RGB hillshade"
+                                MapLayer.SATELLITE -> "HD: MapTiler Satellite"
+                                MapLayer.TERRAIN -> "HD: OpenTopoMap + MapTiler Terrain RGB"
+                                MapLayer.SATELLITE_TERRAIN -> "HD: MapTiler Satellite + Terrain RGB hillshade"
                                 else -> ""
                             }
                         } else {
@@ -410,62 +410,39 @@ private fun NavigationMapCard(
         bearing
     }
 
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
-        )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp),
+        contentAlignment = Alignment.TopCenter
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            Surface(
-                modifier = Modifier.size(52.dp),
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.primaryContainer
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.Navigation,
-                        contentDescription = "Направление",
-                        modifier = Modifier
-                            .size(34.dp)
-                            .rotate(arrowRotation),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
+            Icon(
+                Icons.Default.Navigation,
+                contentDescription = "Направление к точке",
+                modifier = Modifier
+                    .size(112.dp)
+                    .rotate(arrowRotation),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                Geo.distanceLabel(distance),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
 
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    target.name,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "${Geo.distanceLabel(distance)} • ${bearing.roundToInt()}° ${Geo.cardinal(bearing)}",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    if (sensorHeading != null)
-                        "Стрелка показывает направление относительно телефона"
-                    else if (gpsBearing != null)
-                        "Направление уточняется по движению GPS"
-                    else
-                        "Стрелка ориентирована относительно севера карты",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            TextButton(onClick = onStop) {
-                Text("Стоп")
-            }
+        IconButton(
+            onClick = onStop,
+            modifier = Modifier.align(Alignment.TopEnd)
+        ) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Остановить навигацию"
+            )
         }
     }
 }
@@ -862,7 +839,6 @@ private fun OfflineScreen(vm: AppViewModel) {
 
 @Composable
 private fun SettingsScreen(vm: AppViewModel) {
-    var key by remember { mutableStateOf(vm.mapTilerKey()) }
     var custom by remember { mutableStateOf(vm.customStyle()) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
@@ -876,21 +852,14 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Без ключа используются бесплатные слои: Sentinel-2 для спутника и OpenTopoMap для рельефа. " +
-                "С MapTiler API key доступны более детальные Satellite v4, Outdoor v4 и режим «Спутник+рельеф», " +
-                "где поверх снимка строится hillshade из Terrain RGB. Ключ хранится только на телефоне."
+            "MapTiler подключён встроенным ключом. Спутник использует прямой raster-источник MapTiler Satellite, " +
+                "рельеф — Terrain RGB hillshade, а комбинированный режим накладывает hillshade поверх спутникового снимка."
         )
-
-        OutlinedTextField(
-            value = key,
-            onValueChange = { key = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("MapTiler API key") },
-            singleLine = true
+        AssistChip(
+            onClick = {},
+            label = { Text("MapTiler подключён") },
+            leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
-        Button(onClick = { vm.updateMapTilerKey(key) }) {
-            Text("Сохранить ключ")
-        }
 
         HorizontalDivider()
 
