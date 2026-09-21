@@ -51,40 +51,9 @@ object LocalMapStyleServer {
 
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
-
         appContext = context.applicationContext
         onlineCache = File(appContext.filesDir, "map_tile_cache").apply { mkdirs() }
         offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
-
-        val loopback = InetAddress.getByName("127.0.0.1")
-        val socket = runCatching {
-            ServerSocket(8765, 32, loopback)
-        }.getOrElse {
-            ServerSocket(0, 32, loopback)
-        }
-        serverSocket = socket
-        port = socket.localPort
-
-        Thread {
-            while (!socket.isClosed) {
-                val client = runCatching { socket.accept() }.getOrNull() ?: continue
-                client.tcpNoDelay = true
-                try {
-                    clientExecutor.execute {
-                        client.use(::serve)
-                    }
-                } catch (_: RejectedExecutionException) {
-                    runCatching {
-                        sendStatus(client, 503, "Map request queue is full")
-                    }
-                    runCatching { client.close() }
-                }
-            }
-        }.apply {
-            name = "forest-map-style-server"
-            isDaemon = true
-            start()
-        }
     }
 
     fun mapUrl(): String = baseUrl("style/map.json")
