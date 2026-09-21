@@ -89,17 +89,44 @@ fun MapScreen(vm: AppViewModel) {
                 }
             }
 
-            ForestMapView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                location = location,
-                waypoints = waypoints,
-                styleUrl = vm.styleUrl(),
-                recenterToken = recenterToken
-            )
+            if (location == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            "Определяем ваше местоположение…",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "Карта откроется сразу возле вашей GPS-метки.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            } else {
+                ForestMapView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    location = location,
+                    waypoints = waypoints,
+                    styleUrl = vm.styleUrl(),
+                    recenterToken = recenterToken
+                )
+            }
 
-            Surface(tonalElevation = 3.dp) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.58f),
+                tonalElevation = 0.dp
+            ) {
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -173,7 +200,11 @@ fun MapScreen(vm: AppViewModel) {
                                 Button(
                                     onClick = { vm.savePrecise(WaypointType.CAR, "Машина") },
                                     enabled = location != null,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
+                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
+                                    )
                                 ) {
                                     Icon(Icons.Default.DirectionsCar, null)
                                     Spacer(Modifier.width(6.dp))
@@ -188,7 +219,11 @@ fun MapScreen(vm: AppViewModel) {
                                         )
                                     },
                                     enabled = location != null,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
+                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
+                                    )
                                 ) {
                                     Icon(Icons.Default.Forest, null)
                                     Spacer(Modifier.width(6.dp))
@@ -206,7 +241,11 @@ fun MapScreen(vm: AppViewModel) {
                                         else TrackRecordingService.start(context)
                                     },
                                     enabled = location != null,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
+                                    )
                                 ) {
                                     Icon(if (recording) Icons.Default.Stop else Icons.Default.Route, null)
                                     Spacer(Modifier.width(6.dp))
@@ -216,7 +255,11 @@ fun MapScreen(vm: AppViewModel) {
                                 FilledTonalButton(
                                     onClick = { recenterToken++ },
                                     enabled = location != null,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
+                                    )
                                 ) {
                                     Icon(Icons.Default.MyLocation, null)
                                     Spacer(Modifier.width(6.dp))
@@ -243,7 +286,11 @@ private fun SmallAction(
         modifier = modifier,
         enabled = enabled,
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
+        )
     ) {
         Icon(icon, null, Modifier.size(20.dp))
         Spacer(Modifier.width(4.dp))
@@ -548,8 +595,8 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Базовая карта работает без ключа. Для спутникового и рельефного слоя " +
-                "можно указать свой MapTiler API key. Ключ хранится только на телефоне."
+            "Карта, спутник и рельеф работают без ключа. Если указать свой MapTiler API key, " +
+                "спутниковый и рельефный слои будут использовать MapTiler. Ключ хранится только на телефоне."
         )
 
         OutlinedTextField(

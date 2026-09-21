@@ -156,10 +156,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
         _download.value = OfflineMapManager.DownloadProgress()
-        val maxZoom = when {
-            radiusKm <= 2.0 -> 17.0
-            radiusKm <= 5.0 -> 16.0
-            else -> 15.0
+        val maxZoom = if (layer == MapLayer.SATELLITE && app.settings.mapTilerKey.isBlank()) {
+            14.0
+        } else {
+            when {
+                radiusKm <= 2.0 -> 17.0
+                radiusKm <= 5.0 -> 16.0
+                else -> 15.0
+            }
         }
         offline.downloadAround(name, style, loc.latitude, loc.longitude, radiusKm, maxZoom = maxZoom) {
             _download.value = it
