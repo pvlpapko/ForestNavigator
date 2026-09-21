@@ -7,6 +7,7 @@
       "tiles": [
         "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
       ],
+      "scheme": "xyz",
       "tileSize": 256,
       "minzoom": 0,
       "maxzoom": 17,
@@ -14,10 +15,15 @@
     },
     "terrain": {
       "type": "raster-dem",
-      "url": "https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=il3KGdrwRY1RGiUuAlLr",
+      "tiles": [
+        "https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.webp?key=il3KGdrwRY1RGiUuAlLr"
+      ],
+      "scheme": "tms",
       "tileSize": 512,
+      "minzoom": 0,
       "maxzoom": 14,
-      "encoding": "mapbox"
+      "encoding": "mapbox",
+      "attribution": "© MapTiler © OpenStreetMap contributors"
     }
   },
   "layers": [
