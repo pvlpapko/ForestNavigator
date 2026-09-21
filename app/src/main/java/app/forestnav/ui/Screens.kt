@@ -427,7 +427,8 @@ private fun NavigationMapCard(
         Text(
             Geo.distanceLabel(distance),
             style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFFFF2D2D)
         )
     }
 
