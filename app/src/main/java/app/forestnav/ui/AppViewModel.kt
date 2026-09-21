@@ -77,6 +77,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun styleUrl(): String? = MapStyles.url(_mapLayer.value, app.settings)
 
+    fun highDetailMapsEnabled(): Boolean = app.settings.mapTilerKey.isNotBlank()
+
     fun setNavigationTarget(w: Waypoint?) { _navigationTarget.value = w }
 
     fun saveCurrent(type: WaypointType, name: String, note: String = "") {
