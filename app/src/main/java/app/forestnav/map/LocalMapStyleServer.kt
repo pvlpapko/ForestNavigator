@@ -49,6 +49,8 @@ object LocalMapStyleServer {
         }
     )
 
+    private const val MIN_REMOTE_REQUEST_INTERVAL_MS = 100L
+
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
         appContext = context.applicationContext
@@ -197,7 +199,7 @@ object LocalMapStyleServer {
                 }
 
                 val now = System.currentTimeMillis()
-                val waitMs = 320L - (now - lastRemoteRequestAt)
+                val waitMs = MIN_REMOTE_REQUEST_INTERVAL_MS - (now - lastRemoteRequestAt)
                 if (waitMs > 0L) Thread.sleep(waitMs)
                 lastRemoteRequestAt = System.currentTimeMillis()
 
