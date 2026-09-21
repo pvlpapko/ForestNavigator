@@ -35,6 +35,7 @@ fun MapScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
     var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var pointPlacementMode by remember { mutableStateOf(false) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -64,14 +65,25 @@ fun MapScreen(vm: AppViewModel) {
                     }
                 }
 
-                if (layer == MapLayer.SATELLITE || layer == MapLayer.TERRAIN) {
+                if (layer == MapLayer.SATELLITE ||
+                    layer == MapLayer.TERRAIN ||
+                    layer == MapLayer.SATELLITE_TERRAIN
+                ) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
-                            if (layer == MapLayer.SATELLITE) "HD: MapTiler Satellite v4"
-                            else "HD: MapTiler Outdoor v4 • изолинии и походные детали"
+                            when (layer) {
+                                MapLayer.SATELLITE -> "HD: MapTiler Satellite v4"
+                                MapLayer.TERRAIN -> "HD: MapTiler Outdoor v4 • изолинии и походные детали"
+                                MapLayer.SATELLITE_TERRAIN -> "HD: спутник + Terrain RGB hillshade"
+                                else -> ""
+                            }
                         } else {
-                            if (layer == MapLayer.SATELLITE) "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
-                            else "Бесплатный рельеф: OpenTopoMap • для большей детализации добавьте MapTiler key"
+                            when (layer) {
+                                MapLayer.SATELLITE -> "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
+                                MapLayer.TERRAIN -> "Бесплатный рельеф: OpenTopoMap • для большей детализации добавьте MapTiler key"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник + топографический overlay • с MapTiler key включится настоящий hillshade"
+                                else -> ""
+                            }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -132,7 +144,15 @@ fun MapScreen(vm: AppViewModel) {
                         waypoints = waypoints,
                         styleUrl = vm.styleUrl(),
                         recenterToken = recenterToken,
-                        onMapLongPress = { lat, lon -> pendingMapPoint = lat to lon }
+                        pointPlacementEnabled = pointPlacementMode,
+                        onMapClick = { lat, lon ->
+                            pendingMapPoint = lat to lon
+                            pointPlacementMode = false
+                        },
+                        onMapLongPress = { lat, lon ->
+                            pendingMapPoint = lat to lon
+                            pointPlacementMode = false
+                        }
                     )
                 }
 
@@ -170,111 +190,72 @@ fun MapScreen(vm: AppViewModel) {
                             )
                             TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
                         } else {
-                            if (wide || short) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                SmallAction(
+                                    Modifier.weight(1f),
+                                    Icons.Default.DirectionsCar,
+                                    "Машина",
+                                    location != null
+                                ) { vm.savePrecise(WaypointType.CAR, "Машина") }
+
+                                SmallAction(
+                                    Modifier.weight(1f),
+                                    Icons.Default.Forest,
+                                    "Грибы",
+                                    location != null
                                 ) {
-                                    SmallAction(
-                                        Modifier.weight(1f),
-                                        Icons.Default.DirectionsCar,
-                                        "Машина",
-                                        location != null
-                                    ) { vm.savePrecise(WaypointType.CAR, "Машина") }
-
-                                    SmallAction(
-                                        Modifier.weight(1f),
-                                        Icons.Default.Forest,
-                                        "Грибы",
-                                        location != null
-                                    ) {
-                                        vm.savePrecise(
-                                            WaypointType.MUSHROOM,
-                                            "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-                                        )
-                                    }
-
-                                    SmallAction(
-                                        Modifier.weight(1f),
-                                        if (recording) Icons.Default.Stop else Icons.Default.Route,
-                                        if (recording) "Стоп" else "Трек",
-                                        location != null
-                                    ) {
-                                        if (recording) TrackRecordingService.stop(context)
-                                        else TrackRecordingService.start(context)
-                                    }
-
-                                    SmallAction(
-                                        Modifier.weight(1f),
-                                        Icons.Default.MyLocation,
-                                        "Я здесь",
-                                        location != null
-                                    ) { recenterToken++ }
+                                    vm.savePrecise(
+                                        WaypointType.MUSHROOM,
+                                        "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
+                                    )
                                 }
-                            } else {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = { vm.savePrecise(WaypointType.CAR, "Машина") },
-                                        enabled = location != null,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.DirectionsCar, null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("Машина", maxLines = 1)
-                                    }
+                            }
 
-                                    Button(
-                                        onClick = {
-                                            vm.savePrecise(
-                                                WaypointType.MUSHROOM,
-                                                "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-                                            )
-                                        },
-                                        enabled = location != null,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.Forest, null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("Грибы", maxLines = 1)
-                                    }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                SmallAction(
+                                    Modifier.weight(1f),
+                                    if (recording) Icons.Default.Stop else Icons.Default.Route,
+                                    if (recording) "Стоп" else "Трек",
+                                    location != null
+                                ) {
+                                    if (recording) TrackRecordingService.stop(context)
+                                    else TrackRecordingService.start(context)
                                 }
 
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                SmallAction(
+                                    Modifier.weight(1f),
+                                    Icons.Default.AddLocationAlt,
+                                    if (pointPlacementMode) "Отмена" else "Точка",
+                                    location != null,
+                                    selected = pointPlacementMode
                                 ) {
-                                    FilledTonalButton(
-                                        onClick = {
-                                            if (recording) TrackRecordingService.stop(context)
-                                            else TrackRecordingService.start(context)
-                                        },
-                                        enabled = location != null,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(if (recording) Icons.Default.Stop else Icons.Default.Route, null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(if (recording) "Стоп трек" else "Записать трек", maxLines = 1)
-                                    }
+                                    pointPlacementMode = !pointPlacementMode
+                                }
 
-                                    FilledTonalButton(
-                                        onClick = { recenterToken++ },
-                                        enabled = location != null,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.MyLocation, null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("Я здесь", maxLines = 1)
-                                    }
+                                SmallAction(
+                                    Modifier.weight(1f),
+                                    Icons.Default.MyLocation,
+                                    "Я здесь",
+                                    location != null
+                                ) {
+                                    pointPlacementMode = false
+                                    recenterToken++
                                 }
                             }
                         }
 
                         if (!precise.active && location != null) {
                             Text(
-                                "Удерживайте карту, чтобы поставить точку в любом месте.",
+                                if (pointPlacementMode)
+                                    "Режим точки: коснитесь нужного места на карте."
+                                else
+                                    "Нажмите «Точка» и коснитесь карты. Долгое нажатие тоже работает.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -304,13 +285,22 @@ private fun SmallAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     enabled: Boolean,
+    selected: Boolean = false,
     onClick: () -> Unit
 ) {
     FilledTonalButton(
         modifier = modifier,
         enabled = enabled,
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+        colors = if (selected) {
+            ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        } else {
+            ButtonDefaults.filledTonalButtonColors()
+        }
     ) {
         Icon(icon, null, Modifier.size(20.dp))
         Spacer(Modifier.width(4.dp))
@@ -696,8 +686,8 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
             "Без ключа используются бесплатные слои: Sentinel-2 для спутника и OpenTopoMap для рельефа. " +
-                "С вашим MapTiler API key спутник переключается на high-resolution Satellite v4, а рельеф — " +
-                "на Outdoor v4 с более подробной походной топографией и изолиниями. Ключ хранится только на телефоне."
+                "С MapTiler API key доступны более детальные Satellite v4, Outdoor v4 и режим «Спутник+рельеф», " +
+                "где поверх снимка строится hillshade из Terrain RGB. Ключ хранится только на телефоне."
         )
 
         OutlinedTextField(
