@@ -1,6 +1,7 @@
 package app.forestnav.ui
 
 import android.hardware.GeomagneticField
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -201,17 +203,17 @@ fun MapScreen(vm: AppViewModel) {
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(start = 8.dp, end = 8.dp, bottom = 28.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.34f),
-                    shape = MaterialTheme.shapes.large,
+                        .padding(start = 4.dp, end = 4.dp, bottom = 0.dp),
+                    color = Color.Transparent,
+                    shape = MaterialTheme.shapes.small,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp
                 ) {
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(horizontal = 2.dp, vertical = 3.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         if (precise.active) {
                             Text(
@@ -231,9 +233,19 @@ fun MapScreen(vm: AppViewModel) {
                             )
                             TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
                         } else {
+                            if (pointPlacementMode) {
+                                Text(
+                                    "Коснитесь нужного места на карте",
+                                    modifier = Modifier.fillMaxWidth(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
                             Row(
                                 Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 SmallAction(
                                     Modifier.weight(1f),
@@ -253,12 +265,7 @@ fun MapScreen(vm: AppViewModel) {
                                         "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
                                     )
                                 }
-                            }
 
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
                                 SmallAction(
                                     Modifier.weight(1f),
                                     if (recording) Icons.Default.Stop else Icons.Default.Route,
@@ -291,16 +298,6 @@ fun MapScreen(vm: AppViewModel) {
                             }
                         }
 
-                        if (!precise.active && location != null) {
-                            Text(
-                                if (pointPlacementMode)
-                                    "Режим точки: коснитесь нужного места на карте."
-                                else
-                                    "Нажмите «Точка» и коснитесь карты. Долгое нажатие тоже работает.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
                 }
             }
@@ -389,6 +386,8 @@ private fun NavigationMapCard(
     gpsBearing: Float?,
     onStop: () -> Unit
 ) {
+    var showStopDialog by remember { mutableStateOf(false) }
+
     val bearing = Geo.bearingDegrees(latitude, longitude, target.latitude, target.longitude)
     val distance = Geo.distanceMeters(latitude, longitude, target.latitude, target.longitude)
 
@@ -410,40 +409,51 @@ private fun NavigationMapCard(
         bearing
     }
 
-    Box(
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 2.dp),
-        contentAlignment = Alignment.TopCenter
+            .clickable { showStopDialog = true }
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
-            Icon(
-                Icons.Default.Navigation,
-                contentDescription = "Направление к точке",
-                modifier = Modifier
-                    .size(112.dp)
-                    .rotate(arrowRotation),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                Geo.distanceLabel(distance),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        Icon(
+            Icons.Default.Navigation,
+            contentDescription = "Направление к точке",
+            modifier = Modifier
+                .size(112.dp)
+                .rotate(arrowRotation),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            Geo.distanceLabel(distance),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+    }
 
-        IconButton(
-            onClick = onStop,
-            modifier = Modifier.align(Alignment.TopEnd)
-        ) {
-            Icon(
-                Icons.Default.Close,
-                contentDescription = "Остановить навигацию"
-            )
-        }
+    if (showStopDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopDialog = false },
+            title = { Text("Навигация к точке") },
+            text = {
+                Text("Расстояние: ${Geo.distanceLabel(distance)}. Остановить следование к этой точке?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showStopDialog = false
+                        onStop()
+                    }
+                ) {
+                    Text("Остановить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStopDialog = false }) {
+                    Text("Продолжить")
+                }
+            }
+        )
     }
 }
 
@@ -457,10 +467,10 @@ private fun SmallAction(
     onClick: () -> Unit
 ) {
     FilledTonalButton(
-        modifier = modifier,
+        modifier = modifier.height(46.dp),
         enabled = enabled,
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
         colors = if (selected) {
             ButtonDefaults.filledTonalButtonColors(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -470,9 +480,18 @@ private fun SmallAction(
             ButtonDefaults.filledTonalButtonColors()
         }
     ) {
-        Icon(icon, null, Modifier.size(20.dp))
-        Spacer(Modifier.width(4.dp))
-        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Icon(icon, null, Modifier.size(18.dp))
+            Text(
+                label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
     }
 }
 
