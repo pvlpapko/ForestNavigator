@@ -799,13 +799,27 @@ private fun OfflineScreen(vm: AppViewModel) {
             }
 
             Spacer(Modifier.height(10.dp))
-            Button(
-                enabled = location != null,
-                onClick = { vm.downloadCurrentRegion(radius) }
-            ) {
-                Icon(Icons.Default.Download, null)
-                Spacer(Modifier.width(6.dp))
-                Text("Скачать")
+            if (progress?.active == true) {
+                Button(
+                    onClick = vm::cancelDownload,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Icon(Icons.Default.Stop, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Отменить загрузку")
+                }
+            } else {
+                Button(
+                    enabled = location != null,
+                    onClick = { vm.downloadCurrentRegion(radius) }
+                ) {
+                    Icon(Icons.Default.Download, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Скачать")
+                }
             }
 
             progress?.let { p ->
@@ -813,8 +827,14 @@ private fun OfflineScreen(vm: AppViewModel) {
                 p.error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
+                if (p.cancelled) {
+                    Text(
+                        "Загрузка отменена.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-                if (p.error == null) {
+                if (p.error == null && !p.cancelled) {
                     val ratio = if (p.requiredResources > 0) {
                         p.completedResources.toFloat() / p.requiredResources
                     } else 0f

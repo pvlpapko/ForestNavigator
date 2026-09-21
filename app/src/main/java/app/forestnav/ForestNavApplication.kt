@@ -15,7 +15,7 @@ class ForestNavApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         MapLibre.getInstance(this)
-        LocalMapStyleServer.start()
+        LocalMapStyleServer.start(this)
         database = ForestDatabase(this)
         settings = SettingsStore(this)
     }

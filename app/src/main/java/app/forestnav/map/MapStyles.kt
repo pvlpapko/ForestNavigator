@@ -11,10 +11,8 @@ enum class MapLayer(val title: String) {
 }
 
 object MapStyles {
-    const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
-
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
-        MapLayer.MAP -> OPEN_FREE_MAP
+        MapLayer.MAP -> LocalMapStyleServer.mapUrl()
         MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
         MapLayer.TERRAIN -> LocalMapStyleServer.terrainUrl()
         MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()

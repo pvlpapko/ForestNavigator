@@ -172,10 +172,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _download.value = OfflineMapManager.DownloadProgress(error = "Нет GPS-координат")
             return
         }
-        val style = styleUrl() ?: run {
-            _download.value = OfflineMapManager.DownloadProgress(error = "Для этого слоя нужен ключ/URL карты")
-            return
-        }
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
         _download.value = OfflineMapManager.DownloadProgress()
@@ -196,7 +192,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         offline.downloadAround(
             name = name,
-            styleUrl = style,
+            layer = layer,
             latitude = loc.latitude,
             longitude = loc.longitude,
             radiusKm = radiusKm,
@@ -206,6 +202,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _download.value = it
             if (it.complete) refreshOfflineRegions()
         }
+    }
+
+    fun cancelDownload() {
+        offline.cancelDownload()
     }
 
     fun refreshOfflineRegions() {
