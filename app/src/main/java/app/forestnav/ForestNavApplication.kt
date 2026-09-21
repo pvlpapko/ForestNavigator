@@ -3,6 +3,7 @@ package app.forestnav
 import android.app.Application
 import app.forestnav.data.ForestDatabase
 import app.forestnav.data.SettingsStore
+import app.forestnav.map.LocalMapStyleServer
 import org.maplibre.android.MapLibre
 
 class ForestNavApplication : Application() {
@@ -14,6 +15,7 @@ class ForestNavApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         MapLibre.getInstance(this)
+        LocalMapStyleServer.start()
         database = ForestDatabase(this)
         settings = SettingsStore(this)
     }
