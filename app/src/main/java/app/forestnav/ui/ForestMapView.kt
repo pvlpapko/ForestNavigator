@@ -20,6 +20,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
+import app.forestnav.map.MapStyles
 import org.maplibre.android.annotations.Icon
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.Marker
@@ -80,6 +81,12 @@ fun ForestMapView(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         mapView.onCreate(null)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            mapView.onStart()
+        }
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            mapView.onResume()
+        }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching { mapView.onPause() }
@@ -172,7 +179,7 @@ private fun applyStyle(
     if (url == state.loadedStyle || url == state.loadingStyle) return
     state.loadingStyle = url
 
-    map.setStyle(url) { style ->
+    val onLoaded = Style.OnStyleLoaded { style ->
         state.loadedStyle = url
         state.loadingStyle = null
         state.waypointMarkers = emptyList()
@@ -190,6 +197,15 @@ private fun applyStyle(
             map.animateCamera(CameraUpdateFactory.newCameraPosition(target), 2200)
             state.initialCameraAnimationDone = true
         }
+    }
+
+    if (MapStyles.isJsonStyle(url)) {
+        map.setStyle(
+            Style.Builder().fromJson(MapStyles.jsonPayload(url)),
+            onLoaded
+        )
+    } else {
+        map.setStyle(url, onLoaded)
     }
 }
 
