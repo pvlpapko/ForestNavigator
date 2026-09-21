@@ -1,5 +1,6 @@
 package app.forestnav.ui
 
+import android.hardware.GeomagneticField
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +17,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.gnss.SensorCapabilities
 import app.forestnav.map.MapLayer
@@ -31,11 +33,14 @@ fun MapScreen(vm: AppViewModel) {
     val waypoints by vm.waypoints.collectAsState()
     val layer by vm.mapLayer.collectAsState()
     val precise by vm.preciseState.collectAsState()
+    val navigationTarget by vm.navigationTarget.collectAsState()
+    val heading by vm.heading.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
     var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var pointPlacementMode by remember { mutableStateOf(false) }
+    var selectedMapWaypoint by remember { mutableStateOf<Waypoint?>(null) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -152,8 +157,44 @@ fun MapScreen(vm: AppViewModel) {
                         onMapLongPress = { lat, lon ->
                             pendingMapPoint = lat to lon
                             pointPlacementMode = false
+                        },
+                        onWaypointClick = { waypoint ->
+                            selectedMapWaypoint = waypoint
+                            pointPlacementMode = false
                         }
                     )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (navigationTarget != null && location != null) {
+                        NavigationMapCard(
+                            target = navigationTarget!!,
+                            latitude = location!!.latitude,
+                            longitude = location!!.longitude,
+                            altitude = if (location!!.hasAltitude()) location!!.altitude else 0.0,
+                            sensorHeading = heading,
+                            gpsBearing = if (location!!.hasBearing()) location!!.bearing else null,
+                            onStop = { vm.setNavigationTarget(null) }
+                        )
+                    }
+
+                    selectedMapWaypoint?.let { waypoint ->
+                        WaypointMapCard(
+                            waypoint = waypoint,
+                            isActiveTarget = navigationTarget?.id == waypoint.id,
+                            onNavigate = {
+                                vm.setNavigationTarget(waypoint)
+                                selectedMapWaypoint = null
+                            },
+                            onClose = { selectedMapWaypoint = null }
+                        )
+                    }
                 }
 
                 Surface(
@@ -276,6 +317,156 @@ fun MapScreen(vm: AppViewModel) {
                 pendingMapPoint = null
             }
         )
+    }
+}
+
+@Composable
+private fun WaypointMapCard(
+    waypoint: Waypoint,
+    isActiveTarget: Boolean,
+    onNavigate: () -> Unit,
+    onClose: () -> Unit
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                pointIcon(waypoint.type),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    waypoint.name,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    waypoint.accuracyMeters?.let {
+                        "Сохранённая точка • ±${String.format("%.1f", it)} м"
+                    } ?: "Сохранённая точка на карте",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (!isActiveTarget) {
+                FilledTonalButton(onClick = onNavigate) {
+                    Icon(Icons.Default.Navigation, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("К точке")
+                }
+            } else {
+                AssistChip(
+                    onClick = {},
+                    label = { Text("Маршрут активен") },
+                    leadingIcon = { Icon(Icons.Default.Navigation, null) }
+                )
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, "Закрыть")
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavigationMapCard(
+    target: Waypoint,
+    latitude: Double,
+    longitude: Double,
+    altitude: Double,
+    sensorHeading: Float?,
+    gpsBearing: Float?,
+    onStop: () -> Unit
+) {
+    val bearing = Geo.bearingDegrees(latitude, longitude, target.latitude, target.longitude)
+    val distance = Geo.distanceMeters(latitude, longitude, target.latitude, target.longitude)
+
+    val declination = remember(latitude, longitude, altitude) {
+        GeomagneticField(
+            latitude.toFloat(),
+            longitude.toFloat(),
+            altitude.toFloat(),
+            System.currentTimeMillis()
+        ).declination
+    }
+
+    val trueHeading = sensorHeading?.let { (it + declination + 360f) % 360f }
+        ?: gpsBearing?.let { (it + 360f) % 360f }
+
+    val arrowRotation = if (trueHeading != null) {
+        (bearing - trueHeading + 360f) % 360f
+    } else {
+        bearing
+    }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(52.dp),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Navigation,
+                        contentDescription = "Направление",
+                        modifier = Modifier
+                            .size(34.dp)
+                            .rotate(arrowRotation),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    target.name,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${Geo.distanceLabel(distance)} • ${bearing.roundToInt()}° ${Geo.cardinal(bearing)}",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    if (sensorHeading != null)
+                        "Стрелка показывает направление относительно телефона"
+                    else if (gpsBearing != null)
+                        "Направление уточняется по движению GPS"
+                    else
+                        "Стрелка ориентирована относительно севера карты",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            TextButton(onClick = onStop) {
+                Text("Стоп")
+            }
+        }
     }
 }
 
