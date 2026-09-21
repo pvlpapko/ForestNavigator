@@ -39,13 +39,32 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
+      - name: Prepare stable signing key
+        if: ${{ secrets.FORESTNAV_KEYSTORE_B64 != '' }}
+        env:
+          FORESTNAV_KEYSTORE_B64: ${{ secrets.FORESTNAV_KEYSTORE_B64 }}
+        run: |
+          echo "$FORESTNAV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/forestnav-release.jks"
+
+      - name: Build signed updateable APK
+        if: ${{ secrets.FORESTNAV_KEYSTORE_B64 != '' }}
+        env:
+          FORESTNAV_KEYSTORE_PATH: ${{ runner.temp }}/forestnav-release.jks
+          FORESTNAV_STORE_PASSWORD: ${{ secrets.FORESTNAV_STORE_PASSWORD }}
+          FORESTNAV_KEY_ALIAS: ${{ secrets.FORESTNAV_KEY_ALIAS }}
+          FORESTNAV_KEY_PASSWORD: ${{ secrets.FORESTNAV_KEY_PASSWORD }}
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
       - name: Build debug APK
+        if: ${{ secrets.FORESTNAV_KEYSTORE_B64 == '' }}
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ForestNavigator-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ForestNavigator-apk
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
