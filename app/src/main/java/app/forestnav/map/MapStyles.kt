@@ -16,12 +16,24 @@ object MapStyles {
 
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
         MapLayer.MAP -> OPEN_FREE_MAP
+
+        // Without a key the app falls back to the bundled Sentinel-2 style.
+        // With the user's own key it switches to MapTiler's high-resolution
+        // satellite catalog style.
         MapLayer.SATELLITE -> settings.mapTilerKey.takeIf { it.isNotBlank() }
             ?.let { "https://api.maptiler.com/maps/satellite-v4/style.json?key=$it" }
             ?: BUILTIN_SATELLITE
+
+        // Outdoor v4 is more useful in a forest than the generic Landscape style:
+        // it is designed for hiking/outdoor use and exposes contour/topographic detail.
         MapLayer.TERRAIN -> settings.mapTilerKey.takeIf { it.isNotBlank() }
-            ?.let { "https://api.maptiler.com/maps/landscape-v4/style.json?key=$it" }
+            ?.let { "https://api.maptiler.com/maps/outdoor-v4/style.json?key=$it" }
             ?: BUILTIN_TERRAIN
+
         MapLayer.CUSTOM -> settings.customStyleUrl.takeIf { it.isNotBlank() }
     }
+
+    fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
+        settings.mapTilerKey.isNotBlank() &&
+            (layer == MapLayer.SATELLITE || layer == MapLayer.TERRAIN)
 }
