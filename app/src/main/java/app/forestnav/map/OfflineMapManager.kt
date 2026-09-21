@@ -98,6 +98,8 @@ class OfflineMapManager(private val context: Context) {
                     override fun onError(error: String) = onError(error)
                 })
             }
+
+            override fun onRegionNotFound() = onError("Offline region not found: $id")
             override fun onError(error: String) = onError(error)
         })
     }

@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "app.forestnav"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "app.forestnav"
