@@ -116,7 +116,7 @@ fun MapScreen(vm: AppViewModel) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
-                    location = location,
+                    location = location!!,
                     waypoints = waypoints,
                     styleUrl = vm.styleUrl(),
                     recenterToken = recenterToken
