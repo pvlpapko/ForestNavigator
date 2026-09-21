@@ -81,6 +81,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setNavigationTarget(w: Waypoint?) { _navigationTarget.value = w }
 
+    fun saveMapPoint(
+        type: WaypointType,
+        name: String,
+        latitude: Double,
+        longitude: Double,
+        note: String = ""
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.database.insertWaypoint(
+                type = type,
+                name = name,
+                lat = latitude,
+                lon = longitude,
+                altitude = null,
+                accuracy = null,
+                note = note
+            )
+            refreshWaypointsInternal()
+        }
+    }
+
     fun saveCurrent(type: WaypointType, name: String, note: String = "") {
         val loc = location.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -158,14 +179,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
         _download.value = OfflineMapManager.DownloadProgress()
-        val maxZoom = if (layer == MapLayer.SATELLITE && app.settings.mapTilerKey.isBlank()) {
-            14.0
-        } else {
-            when {
-                radiusKm <= 2.0 -> 17.0
-                radiusKm <= 5.0 -> 16.0
-                else -> 15.0
-            }
+        val hasHdProvider = app.settings.mapTilerKey.isNotBlank()
+        val maxZoom = when {
+            layer == MapLayer.SATELLITE && !hasHdProvider -> 14.0
+            hasHdProvider && radiusKm <= 2.0 -> 18.0
+            hasHdProvider && radiusKm <= 5.0 -> 17.0
+            hasHdProvider -> 16.0
+            radiusKm <= 2.0 -> 17.0
+            radiusKm <= 5.0 -> 16.0
+            else -> 15.0
         }
         offline.downloadAround(name, style, loc.latitude, loc.longitude, radiusKm, maxZoom = maxZoom) {
             _download.value = it

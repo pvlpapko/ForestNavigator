@@ -34,6 +34,7 @@ fun MapScreen(vm: AppViewModel) {
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
+    var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -130,7 +131,8 @@ fun MapScreen(vm: AppViewModel) {
                         location = location!!,
                         waypoints = waypoints,
                         styleUrl = vm.styleUrl(),
-                        recenterToken = recenterToken
+                        recenterToken = recenterToken,
+                        onMapLongPress = { lat, lon -> pendingMapPoint = lat to lon }
                     )
                 }
 
@@ -269,10 +271,30 @@ fun MapScreen(vm: AppViewModel) {
                                 }
                             }
                         }
+
+                        if (!precise.active && location != null) {
+                            Text(
+                                "Удерживайте карту, чтобы поставить точку в любом месте.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    pendingMapPoint?.let { point ->
+        MapPointDialog(
+            latitude = point.first,
+            longitude = point.second,
+            onDismiss = { pendingMapPoint = null },
+            onSave = { type, name ->
+                vm.saveMapPoint(type, name, point.first, point.second)
+                pendingMapPoint = null
+            }
+        )
     }
 }
 
@@ -294,6 +316,86 @@ private fun SmallAction(
         Spacer(Modifier.width(4.dp))
         Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+@Composable
+private fun MapPointDialog(
+    latitude: Double,
+    longitude: Double,
+    onDismiss: () -> Unit,
+    onSave: (WaypointType, String) -> Unit
+) {
+    var type by remember { mutableStateOf(WaypointType.CUSTOM) }
+    var name by remember { mutableStateOf("Точка на карте") }
+
+    val types = listOf(
+        WaypointType.MUSHROOM to "Грибы",
+        WaypointType.CAR to "Машина",
+        WaypointType.FAVORITE to "Избранное",
+        WaypointType.WATER to "Вода",
+        WaypointType.DANGER to "Опасность",
+        WaypointType.CUSTOM to "Другое"
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.AddLocationAlt, null) },
+        title = { Text("Поставить точку") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "${String.format("%.6f", latitude)}, ${String.format("%.6f", longitude)}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    types.forEach { (item, label) ->
+                        FilterChip(
+                            selected = type == item,
+                            onClick = {
+                                type = item
+                                name = when (item) {
+                                    WaypointType.MUSHROOM -> "Грибное место"
+                                    WaypointType.CAR -> "Машина"
+                                    WaypointType.FAVORITE -> "Избранное место"
+                                    WaypointType.WATER -> "Вода"
+                                    WaypointType.DANGER -> "Опасность"
+                                    WaypointType.CUSTOM -> "Точка на карте"
+                                }
+                            },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Название") },
+                    singleLine = true
+                )
+
+                Text(
+                    "Координаты берутся из выбранного места на карте, а не из текущей GPS-позиции.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(type, name.ifBlank { "Точка на карте" }) }) {
+                Text("Сохранить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
 }
 
 @Composable

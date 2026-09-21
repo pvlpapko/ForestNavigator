@@ -4,6 +4,7 @@ import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -35,12 +36,14 @@ fun ForestMapView(
     location: Location,
     waypoints: List<Waypoint>,
     styleUrl: String?,
-    recenterToken: Int = 0
+    recenterToken: Int = 0,
+    onMapLongPress: (Double, Double) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val state = remember { NativeMapState() }
     val mapView = remember { MapView(context) }
+    val currentLongPress = rememberUpdatedState(onMapLongPress)
 
     DisposableEffect(mapView, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -72,6 +75,10 @@ fun ForestMapView(
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isAttributionEnabled = true
+                    map.addOnMapLongClickListener { point ->
+                        currentLongPress.value(point.latitude, point.longitude)
+                        true
+                    }
 
                     val target = LatLng(location.latitude, location.longitude)
                     map.cameraPosition = CameraPosition.Builder()
@@ -146,7 +153,10 @@ private fun updateAnnotations(
                 MarkerOptions()
                     .position(LatLng(p.latitude, p.longitude))
                     .title(p.name)
-                    .snippet(p.accuracyMeters?.let { "Точность ±${String.format("%.1f", it)} м" } ?: "")
+                    .snippet(
+                        p.accuracyMeters?.let { "Точность ±${String.format("%.1f", it)} м" }
+                            ?: "Точка поставлена вручную на карте"
+                    )
             )
         }
         state.waypointFingerprint = fingerprint
