@@ -240,7 +240,9 @@ object LocalMapStyleServer {
                         Thread.sleep(delayMs.coerceAtMost(20_000L))
                     } else {
                         lastError = "HTTP $status"
-                        if (status == 404) break
+                        if (status == 404) {
+                            throw IllegalStateException("HTTP 404")
+                        }
                         Thread.sleep((attempt + 1) * 700L)
                     }
                 } finally {
