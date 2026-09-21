@@ -89,14 +89,14 @@ fun MapScreen(vm: AppViewModel) {
                 }
             }
 
-            if (location == null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                if (location == null) {
                     Column(
+                        modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -110,160 +110,148 @@ fun MapScreen(vm: AppViewModel) {
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                } else {
+                    ForestMapView(
+                        modifier = Modifier.fillMaxSize(),
+                        location = location!!,
+                        waypoints = waypoints,
+                        styleUrl = vm.styleUrl(),
+                        recenterToken = recenterToken
+                    )
                 }
-            } else {
-                ForestMapView(
+
+                Surface(
                     modifier = Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .weight(1f),
-                    location = location!!,
-                    waypoints = waypoints,
-                    styleUrl = vm.styleUrl(),
-                    recenterToken = recenterToken
-                )
-            }
-
-            Surface(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.58f),
-                tonalElevation = 0.dp
-            ) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(start = 8.dp, end = 8.dp, bottom = 28.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.34f),
+                    shape = MaterialTheme.shapes.large,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
                 ) {
-                    if (precise.active) {
-                        Text(
-                            "Уточняем: ${precise.label}",
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            "Измерений: ${precise.samples} • лучший фикс: " +
-                                (precise.bestAccuracy?.let { "±${String.format("%.1f", it)} м" } ?: "—"),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        LinearProgressIndicator(
-                            progress = { (precise.samples / 30f).coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
-                    } else {
-                        if (wide || short) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                SmallAction(
-                                    Modifier.weight(1f),
-                                    Icons.Default.DirectionsCar,
-                                    "Машина",
-                                    location != null
-                                ) { vm.savePrecise(WaypointType.CAR, "Машина") }
-
-                                SmallAction(
-                                    Modifier.weight(1f),
-                                    Icons.Default.Forest,
-                                    "Грибы",
-                                    location != null
-                                ) {
-                                    vm.savePrecise(
-                                        WaypointType.MUSHROOM,
-                                        "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-                                    )
-                                }
-
-                                SmallAction(
-                                    Modifier.weight(1f),
-                                    if (recording) Icons.Default.Stop else Icons.Default.Route,
-                                    if (recording) "Стоп" else "Трек",
-                                    location != null
-                                ) {
-                                    if (recording) TrackRecordingService.stop(context)
-                                    else TrackRecordingService.start(context)
-                                }
-
-                                SmallAction(
-                                    Modifier.weight(1f),
-                                    Icons.Default.MyLocation,
-                                    "Я здесь",
-                                    location != null
-                                ) { recenterToken++ }
-                            }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (precise.active) {
+                            Text(
+                                "Уточняем: ${precise.label}",
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "Измерений: ${precise.samples} • лучший фикс: " +
+                                    (precise.bestAccuracy?.let { "±${String.format("%.1f", it)} м" } ?: "—"),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            LinearProgressIndicator(
+                                progress = { (precise.samples / 30f).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
                         } else {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { vm.savePrecise(WaypointType.CAR, "Машина") },
-                                    enabled = location != null,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
-                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
-                                    )
+                            if (wide || short) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(Icons.Default.DirectionsCar, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Машина", maxLines = 1)
-                                }
+                                    SmallAction(
+                                        Modifier.weight(1f),
+                                        Icons.Default.DirectionsCar,
+                                        "Машина",
+                                        location != null
+                                    ) { vm.savePrecise(WaypointType.CAR, "Машина") }
 
-                                Button(
-                                    onClick = {
+                                    SmallAction(
+                                        Modifier.weight(1f),
+                                        Icons.Default.Forest,
+                                        "Грибы",
+                                        location != null
+                                    ) {
                                         vm.savePrecise(
                                             WaypointType.MUSHROOM,
                                             "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
                                         )
-                                    },
-                                    enabled = location != null,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
-                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
-                                    )
-                                ) {
-                                    Icon(Icons.Default.Forest, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Грибы", maxLines = 1)
-                                }
-                            }
+                                    }
 
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                FilledTonalButton(
-                                    onClick = {
+                                    SmallAction(
+                                        Modifier.weight(1f),
+                                        if (recording) Icons.Default.Stop else Icons.Default.Route,
+                                        if (recording) "Стоп" else "Трек",
+                                        location != null
+                                    ) {
                                         if (recording) TrackRecordingService.stop(context)
                                         else TrackRecordingService.start(context)
-                                    },
-                                    enabled = location != null,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
-                                    )
+                                    }
+
+                                    SmallAction(
+                                        Modifier.weight(1f),
+                                        Icons.Default.MyLocation,
+                                        "Я здесь",
+                                        location != null
+                                    ) { recenterToken++ }
+                                }
+                            } else {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(if (recording) Icons.Default.Stop else Icons.Default.Route, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(if (recording) "Стоп трек" else "Записать трек", maxLines = 1)
+                                    Button(
+                                        onClick = { vm.savePrecise(WaypointType.CAR, "Машина") },
+                                        enabled = location != null,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.DirectionsCar, null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Машина", maxLines = 1)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            vm.savePrecise(
+                                                WaypointType.MUSHROOM,
+                                                "Грибное место ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
+                                            )
+                                        },
+                                        enabled = location != null,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.Forest, null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Грибы", maxLines = 1)
+                                    }
                                 }
 
-                                FilledTonalButton(
-                                    onClick = { recenterToken++ },
-                                    enabled = location != null,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
-                                    )
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.MyLocation, null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Я здесь", maxLines = 1)
+                                    FilledTonalButton(
+                                        onClick = {
+                                            if (recording) TrackRecordingService.stop(context)
+                                            else TrackRecordingService.start(context)
+                                        },
+                                        enabled = location != null,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(if (recording) Icons.Default.Stop else Icons.Default.Route, null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(if (recording) "Стоп трек" else "Записать трек", maxLines = 1)
+                                    }
+
+                                    FilledTonalButton(
+                                        onClick = { recenterToken++ },
+                                        enabled = location != null,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.MyLocation, null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Я здесь", maxLines = 1)
+                                    }
                                 }
                             }
                         }
@@ -286,11 +274,7 @@ private fun SmallAction(
         modifier = modifier,
         enabled = enabled,
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
-        )
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
     ) {
         Icon(icon, null, Modifier.size(20.dp))
         Spacer(Modifier.width(4.dp))
