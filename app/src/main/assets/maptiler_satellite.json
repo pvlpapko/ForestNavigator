@@ -4,11 +4,22 @@
   "sources": {
     "satellite": {
       "type": "raster",
-      "url": "https://api.maptiler.com/tiles/satellite-v2/tiles.json?key=il3KGdrwRY1RGiUuAlLr",
-      "tileSize": 512
+      "tiles": [
+        "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=il3KGdrwRY1RGiUuAlLr"
+      ],
+      "scheme": "tms",
+      "tileSize": 512,
+      "minzoom": 0,
+      "maxzoom": 22,
+      "attribution": "© MapTiler © OpenStreetMap contributors"
     }
   },
   "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#263238" }
+    },
     {
       "id": "satellite",
       "type": "raster",
