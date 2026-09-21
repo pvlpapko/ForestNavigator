@@ -1,0 +1,22 @@
+{
+  "version": 8,
+  "name": "ForestNavigator MapTiler Satellite",
+  "sources": {
+    "satellite": {
+      "type": "raster",
+      "url": "https://api.maptiler.com/tiles/satellite-v2/tiles.json?key=il3KGdrwRY1RGiUuAlLr",
+      "tileSize": 512
+    }
+  },
+  "layers": [
+    {
+      "id": "satellite",
+      "type": "raster",
+      "source": "satellite",
+      "paint": {
+        "raster-opacity": 1.0,
+        "raster-resampling": "linear"
+      }
+    }
+  ]
+}
