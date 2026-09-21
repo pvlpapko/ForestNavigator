@@ -12,6 +12,10 @@ import java.net.Socket
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
@@ -34,6 +38,16 @@ object LocalMapStyleServer {
     private lateinit var onlineCache: File
     private lateinit var offlineRoot: File
     private var serverSocket: ServerSocket? = null
+    private val clientExecutor = ThreadPoolExecutor(
+        4,
+        4,
+        30L,
+        TimeUnit.SECONDS,
+        ArrayBlockingQueue(48),
+        { runnable ->
+            Thread(runnable, "forest-map-http-client").apply { isDaemon = true }
+        }
+    )
 
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
@@ -53,15 +67,17 @@ object LocalMapStyleServer {
 
         Thread {
             while (!socket.isClosed) {
-                runCatching {
-                    val client = socket.accept()
-                    Thread {
+                val client = runCatching { socket.accept() }.getOrNull() ?: continue
+                client.tcpNoDelay = true
+                try {
+                    clientExecutor.execute {
                         client.use(::serve)
-                    }.apply {
-                        name = "forest-map-http-client"
-                        isDaemon = true
-                        start()
                     }
+                } catch (_: RejectedExecutionException) {
+                    runCatching {
+                        sendStatus(client, 503, "Map request queue is full")
+                    }
+                    runCatching { client.close() }
                 }
             }
         }.apply {
@@ -121,7 +137,7 @@ object LocalMapStyleServer {
     }
 
     private fun serve(client: Socket) {
-        client.soTimeout = 30_000
+        client.soTimeout = 15_000
         val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.US_ASCII))
         val requestLine = reader.readLine().orEmpty()
         val path = requestLine.split(' ').getOrNull(1)
@@ -369,7 +385,7 @@ object LocalMapStyleServer {
         val headers = buildString {
             append("HTTP/1.1 200 OK\r\n")
             append("Content-Type: $contentType\r\n")
-            append("Cache-Control: public, max-age=86400\r\n")
+            append("Cache-Control: public, max-age=604800\r\n")
             append("Content-Length: ${bytes.size}\r\n")
             append("Connection: close\r\n\r\n")
         }
