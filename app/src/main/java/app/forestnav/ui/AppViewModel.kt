@@ -179,17 +179,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
         _download.value = OfflineMapManager.DownloadProgress()
-        val hasHdProvider = app.settings.mapTilerKey.isNotBlank()
         val maxZoom = when {
-            (layer == MapLayer.SATELLITE || layer == MapLayer.SATELLITE_TERRAIN) && !hasHdProvider -> 14.0
-            hasHdProvider && radiusKm <= 2.0 -> 18.0
-            hasHdProvider && radiusKm <= 5.0 -> 17.0
-            hasHdProvider -> 16.0
-            radiusKm <= 2.0 -> 17.0
-            radiusKm <= 5.0 -> 16.0
-            else -> 15.0
+            radiusKm <= 2.0 -> 18.0
+            radiusKm <= 5.0 -> 17.0
+            radiusKm <= 10.0 -> 16.0
+            radiusKm <= 25.0 -> 15.0
+            radiusKm <= 50.0 -> 14.0
+            radiusKm <= 100.0 -> 13.0
+            else -> 12.0
         }
-        offline.downloadAround(name, style, loc.latitude, loc.longitude, radiusKm, maxZoom = maxZoom) {
+        val minZoom = when {
+            radiusKm >= 100.0 -> 7.0
+            radiusKm >= 50.0 -> 8.0
+            radiusKm >= 25.0 -> 9.0
+            else -> 10.0
+        }
+        offline.downloadAround(
+            name = name,
+            styleUrl = style,
+            latitude = loc.latitude,
+            longitude = loc.longitude,
+            radiusKm = radiusKm,
+            minZoom = minZoom,
+            maxZoom = maxZoom
+        ) {
             _download.value = it
             if (it.complete) refreshOfflineRegions()
         }
