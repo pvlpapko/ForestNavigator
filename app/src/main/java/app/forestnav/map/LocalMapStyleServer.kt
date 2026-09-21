@@ -18,7 +18,12 @@ object LocalMapStyleServer {
     fun start() {
         if (!started.compareAndSet(false, true)) return
 
-        val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+        val loopback = InetAddress.getByName("127.0.0.1")
+        val socket = runCatching {
+            ServerSocket(8765, 16, loopback)
+        }.getOrElse {
+            ServerSocket(0, 16, loopback)
+        }
         serverSocket = socket
         port = socket.localPort
 
