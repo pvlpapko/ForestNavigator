@@ -63,6 +63,20 @@ fun MapScreen(vm: AppViewModel) {
                     }
                 }
 
+                if (layer == MapLayer.SATELLITE || layer == MapLayer.TERRAIN) {
+                    Text(
+                        if (vm.highDetailMapsEnabled()) {
+                            if (layer == MapLayer.SATELLITE) "HD: MapTiler Satellite v4"
+                            else "HD: MapTiler Outdoor v4 • изолинии и походные детали"
+                        } else {
+                            if (layer == MapLayer.SATELLITE) "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
+                            else "Бесплатный рельеф: OpenTopoMap • для большей детализации добавьте MapTiler key"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
                 Spacer(Modifier.height(if (short) 4.dp else 8.dp))
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -579,8 +593,9 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Карта, спутник и рельеф работают без ключа. Если указать свой MapTiler API key, " +
-                "спутниковый и рельефный слои будут использовать MapTiler. Ключ хранится только на телефоне."
+            "Без ключа используются бесплатные слои: Sentinel-2 для спутника и OpenTopoMap для рельефа. " +
+                "С вашим MapTiler API key спутник переключается на high-resolution Satellite v4, а рельеф — " +
+                "на Outdoor v4 с более подробной походной топографией и изолиниями. Ключ хранится только на телефоне."
         )
 
         OutlinedTextField(
