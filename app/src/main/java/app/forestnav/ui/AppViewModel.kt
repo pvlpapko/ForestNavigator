@@ -181,7 +181,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _download.value = OfflineMapManager.DownloadProgress()
         val hasHdProvider = app.settings.mapTilerKey.isNotBlank()
         val maxZoom = when {
-            layer == MapLayer.SATELLITE && !hasHdProvider -> 14.0
+            (layer == MapLayer.SATELLITE || layer == MapLayer.SATELLITE_TERRAIN) && !hasHdProvider -> 14.0
             hasHdProvider && radiusKm <= 2.0 -> 18.0
             hasHdProvider && radiusKm <= 5.0 -> 17.0
             hasHdProvider -> 16.0
