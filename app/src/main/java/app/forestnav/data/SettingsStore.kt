@@ -1,15 +1,22 @@
 package app.forestnav.data
 
 import android.content.Context
+import app.forestnav.BuildConfig
 import java.io.File
 
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("forestnav_settings", Context.MODE_PRIVATE)
 
+    // The app is personal-use only. The MapTiler key is baked into BuildConfig
+    // so map layers cannot be broken by an empty/stale value in SharedPreferences.
     var mapTilerKey: String
-        get() = prefs.getString("maptiler_key", "").orEmpty()
-        set(value) = prefs.edit().putString("maptiler_key", value.trim()).apply()
+        get() = BuildConfig.MAPTILER_KEY
+        set(value) {
+            // Kept only for source/API compatibility with older builds.
+            // Runtime map access uses the embedded key above.
+            prefs.edit().putString("maptiler_key_legacy", value.trim()).apply()
+        }
 
     var customStyleUrl: String
         get() = prefs.getString("custom_style_url", "").orEmpty()
