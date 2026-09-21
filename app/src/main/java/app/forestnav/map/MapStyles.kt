@@ -12,15 +12,22 @@ enum class MapLayer(val title: String) {
 
 object MapStyles {
     const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
-    private const val MAPTILER_SATELLITE = "asset://maptiler_satellite.json"
-    private const val MAPTILER_TERRAIN = "asset://maptiler_terrain.json"
-    private const val MAPTILER_COMBINED = "asset://maptiler_satellite_terrain.json"
+
+    // Remote immutable styles are intentional: MapLibre OfflineManager can fetch
+    // the style document and enumerate its remote raster resources. Local asset://
+    // styles render fine but do not reliably populate OfflineRegion resources.
+    private const val SATELLITE_STYLE =
+        "https://raw.githubusercontent.com/pvlpapko/ForestNavigator/73fcdb88f58f84c862ff44b7b86151fb0f4a9f69/app/src/main/assets/maptiler_satellite.json"
+    private const val TERRAIN_STYLE =
+        "https://raw.githubusercontent.com/pvlpapko/ForestNavigator/73fcdb88f58f84c862ff44b7b86151fb0f4a9f69/app/src/main/assets/maptiler_terrain.json"
+    private const val COMBINED_STYLE =
+        "https://raw.githubusercontent.com/pvlpapko/ForestNavigator/73fcdb88f58f84c862ff44b7b86151fb0f4a9f69/app/src/main/assets/maptiler_satellite_terrain.json"
 
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
         MapLayer.MAP -> OPEN_FREE_MAP
-        MapLayer.SATELLITE -> MAPTILER_SATELLITE
-        MapLayer.TERRAIN -> MAPTILER_TERRAIN
-        MapLayer.SATELLITE_TERRAIN -> MAPTILER_COMBINED
+        MapLayer.SATELLITE -> SATELLITE_STYLE
+        MapLayer.TERRAIN -> TERRAIN_STYLE
+        MapLayer.SATELLITE_TERRAIN -> COMBINED_STYLE
         MapLayer.CUSTOM -> settings.customStyleUrl.takeIf { it.isNotBlank() }
     }
 
