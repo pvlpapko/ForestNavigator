@@ -7,10 +7,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.forestnav.data.Waypoint
 import org.maplibre.android.annotations.Marker
 import org.maplibre.android.annotations.MarkerOptions
@@ -37,12 +37,16 @@ fun ForestMapView(
     waypoints: List<Waypoint>,
     styleUrl: String?,
     recenterToken: Int = 0,
+    pointPlacementEnabled: Boolean = false,
+    onMapClick: (Double, Double) -> Unit = { _, _ -> },
     onMapLongPress: (Double, Double) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val state = remember { NativeMapState() }
     val mapView = remember { MapView(context) }
+    val currentPlacementEnabled = rememberUpdatedState(pointPlacementEnabled)
+    val currentMapClick = rememberUpdatedState(onMapClick)
     val currentLongPress = rememberUpdatedState(onMapLongPress)
 
     DisposableEffect(mapView, lifecycleOwner) {
@@ -75,6 +79,15 @@ fun ForestMapView(
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isAttributionEnabled = true
+
+                    map.addOnMapClickListener { point ->
+                        if (currentPlacementEnabled.value) {
+                            currentMapClick.value(point.latitude, point.longitude)
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     map.addOnMapLongClickListener { point ->
                         currentLongPress.value(point.latitude, point.longitude)
                         true
