@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.location.Location
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -118,14 +119,27 @@ class OfflineMapDownloadService : Service() {
         val previous = loadSavedJob(requireActive = false) ?: return requested
         if (!manager.hasPartial(previous.regionId)) return requested
 
+        val distanceMeters = FloatArray(1)
+        Location.distanceBetween(
+            previous.latitude,
+            previous.longitude,
+            requested.latitude,
+            requested.longitude,
+            distanceMeters
+        )
+        val allowedDriftMeters = maxOf(750.0, previous.radiusKm * 150.0)
+
         val sameArea = previous.layer == requested.layer &&
-            abs(previous.latitude - requested.latitude) < 0.001 &&
-            abs(previous.longitude - requested.longitude) < 0.001 &&
+            distanceMeters[0] <= allowedDriftMeters &&
             abs(previous.radiusKm - requested.radiusKm) < 0.01 &&
             previous.minZoom == requested.minZoom &&
             previous.maxZoom == requested.maxZoom
 
-        return if (sameArea) requested.copy(regionId = previous.regionId) else requested
+        return if (sameArea) {
+            previous.copy(name = requested.name)
+        } else {
+            requested
+        }
     }
 
     private fun updateNotification(spec: JobSpec, progress: OfflineMapManager.DownloadProgress) {
