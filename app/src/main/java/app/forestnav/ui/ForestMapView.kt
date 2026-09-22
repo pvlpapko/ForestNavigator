@@ -250,7 +250,7 @@ private fun setupLocationPuck(
 
     if (!component.isLocationComponentActivated) {
         val puckOptions = LocationComponentOptions.builder(context)
-            .bearingOnTop(false)
+            .bearingOnTop(true)
             .compassAnimationEnabled(true)
             .build()
         component.activateLocationComponent(
