@@ -83,9 +83,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "MapTiler Satellite v4 • исходный HD-стиль"
-                                MapLayer.TERRAIN -> "MapTiler Outdoor v4 • исходный рельеф с лесами, водой, дорогами и высотами"
-                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + Terrain RGB hillshade"
+                                MapLayer.SATELLITE -> "Esri World Imagery • спутниковые и аэрофотоснимки"
+                                MapLayer.TERRAIN -> "Esri World Topographic Map • дороги, леса, вода, подписи и рельеф"
+                                MapLayer.SATELLITE_TERRAIN -> "Esri Imagery + Hillshade + дороги и подписи"
                                 else -> ""
                             }
                         } else {
@@ -947,13 +947,13 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Онлайн-карты возвращены к ранней рабочей схеме: обычная карта — OpenFreeMap Liberty, " +
-                "спутник — оригинальный MapTiler Satellite v4, рельеф — оригинальный MapTiler Outdoor v4. " +
-                "После ручного просмотра карта остаётся там, где вы её оставили; режим слежения включается кнопкой «Я здесь»."
+            "Картографический модуль собран заново на ArcGIS/Esri: обычная карта — World Street Map, " +
+                "спутник — World Imagery, рельеф — World Topographic Map, комбинированный режим — Imagery + Hillshade + справочные слои. " +
+                "Онлайн-рендер и офлайн-загрузка используют один набор источников, но отдельные кэши."
         )
         AssistChip(
             onClick = {},
-            label = { Text("MapTiler API + офлайн-кэш") },
+            label = { Text("ArcGIS/Esri + отдельный офлайн-кэш") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 

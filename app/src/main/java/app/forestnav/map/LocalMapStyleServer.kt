@@ -1,7 +1,6 @@
 package app.forestnav.map
 
 import android.content.Context
-import app.forestnav.BuildConfig
 import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
@@ -12,55 +11,58 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 /**
- * Local MapTiler raster cache used for offline areas and as a network fallback.
+ * Local offline server for the clean ArcGIS provider stack.
  *
- * Online rendering normally uses MapTiler's native style.json directly.
- * Downloaded regions use the matching MapTiler raster maps so they remain
- * available without internet.
+ * Online rendering does not use this server. Downloaded areas and the explicit
+ * offline mode use exactly the same ArcGIS cached tile services.
  */
 object LocalMapStyleServer {
-    private data class Provider(
+    private data class SourceSpec(
         val id: String,
+        val extension: String,
+        val contentType: String,
+        val maxZoom: Int,
         val url: (Int, Int, Int) -> String,
-        val minIntervalMs: Long
+        val minIntervalMs: Long = 45L
     )
 
     private val started = AtomicBoolean(false)
-    private lateinit var onlineCache: File
+    private lateinit var cacheRoot: File
     private lateinit var offlineRoot: File
     private var serverSocket: ServerSocket? = null
 
     @Volatile private var port: Int = 8765
 
-    private val providerBlockedUntil = ConcurrentHashMap<String, Long>()
-    private val providerLocks = ConcurrentHashMap<String, Any>()
-    private val providerNextRequestAt = ConcurrentHashMap<String, Long>()
+    private val nextRequestAt = ConcurrentHashMap<String, Long>()
+    private val blockedUntil = ConcurrentHashMap<String, Long>()
+    private val sourceLocks = ConcurrentHashMap<String, Any>()
 
     private val clientExecutor = ThreadPoolExecutor(
-        10,
-        10,
+        8,
+        8,
         30L,
         TimeUnit.SECONDS,
         ArrayBlockingQueue(256),
-        { runnable -> Thread(runnable, "forest-maptiler-proxy").apply { isDaemon = true } }
+        { runnable ->
+            Thread(runnable, "forest-esri-local-http").apply { isDaemon = true }
+        }
     )
 
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_cache_0917_rebuild_v2").apply { mkdirs() }
-        offlineRoot = File(appContext.filesDir, "offline_regions_0917_rebuild_v2").apply { mkdirs() }
+        cacheRoot = File(appContext.filesDir, CACHE_DIR).apply { mkdirs() }
+        offlineRoot = File(appContext.filesDir, OFFLINE_DIR).apply { mkdirs() }
 
         try {
             val loopback = InetAddress.getByName("127.0.0.1")
@@ -87,7 +89,7 @@ object LocalMapStyleServer {
                         runCatching { client.close() }
                     }
                 }
-            }, "forest-maptiler-http").apply {
+            }, "forest-esri-local-server").apply {
                 isDaemon = true
                 start()
             }
@@ -97,6 +99,9 @@ object LocalMapStyleServer {
         }
     }
 
+    fun offlineRoot(context: Context): File =
+        File(context.filesDir, OFFLINE_DIR).apply { mkdirs() }
+
     fun mapUrl(): String = baseUrl("style/map.json")
     fun satelliteUrl(): String = baseUrl("style/satellite.json")
     fun terrainUrl(): String = baseUrl("style/terrain.json")
@@ -104,22 +109,19 @@ object LocalMapStyleServer {
 
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(SOURCE_STREET)
-        MapLayer.SATELLITE -> listOf(SOURCE_SATELLITE)
-        MapLayer.TERRAIN -> listOf(SOURCE_OUTDOOR)
-        MapLayer.SATELLITE_TERRAIN -> listOf(SOURCE_SATELLITE, SOURCE_OUTDOOR)
+        MapLayer.SATELLITE -> listOf(SOURCE_IMAGERY)
+        MapLayer.TERRAIN -> listOf(SOURCE_TOPO)
+        MapLayer.SATELLITE_TERRAIN ->
+            listOf(SOURCE_IMAGERY, SOURCE_HILLSHADE, SOURCE_TRANSPORT, SOURCE_BOUNDARIES)
         MapLayer.CUSTOM -> emptyList()
     }
 
-    fun maxDownloadZoom(source: String): Int = when (source) {
-        SOURCE_STREET, SOURCE_SATELLITE, SOURCE_OUTDOOR -> 18
-        else -> 0
+    fun maxDownloadZoom(source: String): Int = spec(source).maxZoom
+
+    fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File {
+        val s = spec(source)
+        return File(regionDir, "esri/$source/$z/$x/$y.${s.extension}")
     }
-
-    fun tileExtension(source: String): String =
-        if (source == SOURCE_SATELLITE) "jpg" else "png"
-
-    fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "maptiler_v1/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -128,7 +130,7 @@ object LocalMapStyleServer {
         y: Int,
         destination: File
     ): Long {
-        if (destination.isFile && destination.length() > 0L) return destination.length()
+        if (isValid(destination)) return destination.length()
 
         findCachedTile(source, z, x, y)?.let { cached ->
             destination.parentFile?.mkdirs()
@@ -149,7 +151,7 @@ object LocalMapStyleServer {
     }
 
     private fun serve(client: Socket) {
-        client.soTimeout = 10_000
+        client.soTimeout = 15_000
         val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.US_ASCII))
         val requestLine = reader.readLine().orEmpty()
         val path = requestLine.split(' ').getOrNull(1)
@@ -160,25 +162,16 @@ object LocalMapStyleServer {
         while (reader.readLine()?.isNotEmpty() == true) Unit
 
         when {
-            path == "style/map.json" -> sendJson(client, rasterStyle(
-                "Forest Navigator Streets Offline",
-                SOURCE_STREET,
-                18,
-                "© MapTiler © OpenStreetMap contributors"
+            path == "style/map.json" -> sendJson(client, localSingleStyle(
+                "Esri World Street Map Offline", SOURCE_STREET
             ))
-            path == "style/satellite.json" -> sendJson(client, rasterStyle(
-                "Forest Navigator Satellite Offline",
-                SOURCE_SATELLITE,
-                18,
-                "Satellite imagery © MapTiler"
+            path == "style/satellite.json" -> sendJson(client, localSingleStyle(
+                "Esri World Imagery Offline", SOURCE_IMAGERY
             ))
-            path == "style/terrain.json" -> sendJson(client, rasterStyle(
-                "Forest Navigator Outdoor Offline",
-                SOURCE_OUTDOOR,
-                18,
-                "Outdoor map © MapTiler © OpenStreetMap contributors"
+            path == "style/terrain.json" -> sendJson(client, localSingleStyle(
+                "Esri World Topographic Map Offline", SOURCE_TOPO
             ))
-            path == "style/combined.json" -> sendJson(client, combinedStyle())
+            path == "style/combined.json" -> sendJson(client, localCombinedStyle())
             path.startsWith("tile/") -> serveTile(client, path)
             else -> sendStatus(client, 404, "Not Found")
         }
@@ -192,119 +185,80 @@ object LocalMapStyleServer {
         }
 
         val source = parts[1]
+        val sourceSpec = runCatching { spec(source) }.getOrNull()
         val z = parts[2].toIntOrNull()
         val x = parts[3].toIntOrNull()
         val yPart = parts[4]
         val y = yPart.substringBeforeLast('.').toIntOrNull()
         val ext = yPart.substringAfterLast('.', missingDelimiterValue = "")
 
-        if (source !in VALID_SOURCES || z == null || x == null || y == null ||
-            ext != tileExtension(source)
+        if (sourceSpec == null ||
+            z == null || x == null || y == null ||
+            ext != sourceSpec.extension
         ) {
             sendStatus(client, 400, "Bad Request")
             return
         }
 
-        if (z > maxDownloadZoom(source)) {
-            sendStatus(client, 404, "Native offline zoom exceeded")
-            return
-        }
-
         findCachedTile(source, z, x, y)?.let { cached ->
-            sendBinary(client, cached.readBytes(), contentType(source))
+            sendBinary(client, cached.readBytes(), sourceSpec.contentType)
             return
         }
 
         runCatching {
             val bytes = fetchRemoteTile(source, z, x, y)
-            writeAtomically(onlineTile(source, z, x, y), bytes)
-            sendBinary(client, bytes, contentType(source))
+            writeAtomically(cacheTile(source, z, x, y), bytes)
+            sendBinary(client, bytes, sourceSpec.contentType)
         }.onFailure { error ->
-            sendStatus(client, 502, error.message ?: "Tile fetch failed")
+            val message = error.message.orEmpty()
+            val status = when {
+                message.contains("404") -> 404
+                message.contains("429") -> 503
+                else -> 502
+            }
+            sendStatus(client, status, message.ifBlank { "Tile unavailable" })
         }
     }
 
     private fun findCachedTile(source: String, z: Int, x: Int, y: Int): File? {
-        val online = onlineTile(source, z, x, y)
-        if (online.isFile && online.length() > 0L) return online
+        val cached = cacheTile(source, z, x, y)
+        if (isValid(cached)) return cached
 
         offlineRoot.listFiles()
             ?.asSequence()
             ?.filter { it.isDirectory }
-            ?.sortedBy { if (it.name.startsWith(".partial-")) 1 else 0 }
             ?.forEach { region ->
                 val file = tileFile(region, source, z, x, y)
-                if (file.isFile && file.length() > 0L) return file
+                if (isValid(file)) return file
             }
 
         return null
     }
 
-    private fun onlineTile(source: String, z: Int, x: Int, y: Int): File =
-        File(onlineCache, "$source/$z/$x/$y.${tileExtension(source)}")
-
-    private fun providerFor(source: String): Provider {
-        val key = URLEncoder.encode(
-            BuildConfig.MAPTILER_KEY,
-            StandardCharsets.UTF_8.toString()
-        )
-
-        return when (source) {
-            SOURCE_STREET -> Provider(
-                id = "maptiler-streets-v4",
-                url = { z, x, y ->
-                    "https://api.maptiler.com/maps/streets-v4/256/$z/$x/$y.png?key=$key"
-                },
-                minIntervalMs = 80L
-            )
-
-            SOURCE_SATELLITE -> Provider(
-                id = "maptiler-satellite-v2",
-                url = { z, x, y ->
-                    "https://api.maptiler.com/tiles/satellite-v2/$z/$x/$y.jpg?key=$key"
-                },
-                minIntervalMs = 80L
-            )
-
-            SOURCE_OUTDOOR -> Provider(
-                id = "maptiler-outdoor-v4",
-                url = { z, x, y ->
-                    "https://api.maptiler.com/maps/outdoor-v4/256/$z/$x/$y.png?key=$key"
-                },
-                minIntervalMs = 80L
-            )
-
-            else -> error("Unknown source: $source")
-        }
+    private fun cacheTile(source: String, z: Int, x: Int, y: Int): File {
+        val s = spec(source)
+        return File(cacheRoot, "$source/$z/$x/$y.${s.extension}")
     }
 
-    private fun fetchRemoteTile(source: String, z: Int, x: Int, y: Int): ByteArray {
-        val provider = providerFor(source)
-        var lastError = "MapTiler: неизвестная ошибка"
+    private fun isValid(file: File): Boolean =
+        file.isFile && file.length() >= MIN_TILE_BYTES
 
-        repeat(MAX_ATTEMPTS) { attempt ->
+    private fun fetchRemoteTile(source: String, z: Int, x: Int, y: Int): ByteArray {
+        val s = spec(source)
+        var lastError = "ArcGIS: не удалось получить тайл"
+
+        for (attempt in 0 until MAX_ATTEMPTS) {
             if (Thread.currentThread().isInterrupted) {
                 throw InterruptedException("Загрузка отменена")
             }
 
-            val blockedUntil = providerBlockedUntil[provider.id] ?: 0L
-            val blockedFor = blockedUntil - System.currentTimeMillis()
-            if (blockedFor > 0L) {
-                Thread.sleep(blockedFor.coerceAtMost(8_000L))
-            }
+            awaitSourceSlot(s)
 
-            awaitProviderSlot(provider)
-
-            val remoteY = if (source == SOURCE_SATELLITE) {
-                ((1L shl z) - 1L - y.toLong()).toInt()
-            } else {
-                y
-            }
-            val connection = URL(provider.url(z, x, remoteY)).openConnection() as HttpURLConnection
+            val connection = URL(s.url(z, x, y)).openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "ForestNavigator/1.0.1 Android")
+            connection.setRequestProperty("User-Agent", "ForestNavigator/1.1 Android")
             connection.setRequestProperty("Accept", "image/*,*/*;q=0.8")
             connection.setRequestProperty("Accept-Encoding", "identity")
 
@@ -312,48 +266,86 @@ object LocalMapStyleServer {
                 val status = connection.responseCode
                 if (status in 200..299) {
                     val bytes = connection.inputStream.use { it.readBytes() }
-                    if (bytes.size < 128) throw IOException("Пустой тайл")
-                    providerBlockedUntil.remove(provider.id)
+                    if (bytes.size < MIN_TILE_BYTES) {
+                        throw IOException("ArcGIS вернул пустой тайл")
+                    }
+                    blockedUntil.remove(source)
                     return bytes
                 }
 
-                lastError = "MapTiler HTTP $status"
+                if (status == 404) {
+                    throw IOException("ArcGIS HTTP 404")
+                }
+
+                lastError = "ArcGIS HTTP $status"
                 if (status == 429 || status in 500..599) {
                     val retryAfterMs = connection.getHeaderField("Retry-After")
                         ?.toLongOrNull()
                         ?.times(1000L)
-                        ?: ((1_500L shl attempt.coerceAtMost(4))).coerceAtMost(30_000L)
-                    providerBlockedUntil[provider.id] =
-                        System.currentTimeMillis() + retryAfterMs.coerceAtMost(30_000L)
+                        ?: retryDelay(attempt)
+                    blockSource(source, retryAfterMs)
                 }
             } catch (e: InterruptedException) {
                 throw e
             } catch (e: SocketTimeoutException) {
-                lastError = "MapTiler timeout"
+                lastError = "ArcGIS timeout"
             } catch (e: IOException) {
-                lastError = "MapTiler: ${e.message ?: "ошибка сети"}"
+                lastError = e.message ?: "ArcGIS: ошибка сети"
             } finally {
                 runCatching { connection.errorStream?.close() }
                 connection.disconnect()
             }
 
             if (attempt + 1 < MAX_ATTEMPTS) {
-                Thread.sleep(300L * (attempt + 1))
+                sleepInterruptibly(retryDelay(attempt))
             }
         }
 
         throw IOException(lastError)
     }
 
-    private fun awaitProviderSlot(provider: Provider) {
-        val lock = providerLocks.getOrPut(provider.id) { Any() }
+    private fun awaitSourceSlot(source: SourceSpec) {
+        val lock = sourceLocks.getOrPut(source.id) { Any() }
         synchronized(lock) {
-            val now = System.currentTimeMillis()
-            val next = providerNextRequestAt[provider.id] ?: 0L
-            val waitMs = next - now
-            if (waitMs > 0L) Thread.sleep(waitMs)
-            providerNextRequestAt[provider.id] =
-                System.currentTimeMillis() + provider.minIntervalMs
+            while (true) {
+                if (Thread.currentThread().isInterrupted) {
+                    throw InterruptedException("Загрузка отменена")
+                }
+
+                val now = System.currentTimeMillis()
+                val earliest = max(
+                    nextRequestAt[source.id] ?: 0L,
+                    blockedUntil[source.id] ?: 0L
+                )
+                val waitMs = earliest - now
+
+                if (waitMs <= 0L) {
+                    nextRequestAt[source.id] = now + source.minIntervalMs
+                    return
+                }
+
+                sleepInterruptibly(waitMs.coerceAtMost(1_000L))
+            }
+        }
+    }
+
+    private fun blockSource(source: String, delayMs: Long) {
+        val until = System.currentTimeMillis() + delayMs.coerceAtMost(MAX_BACKOFF_MS)
+        blockedUntil.compute(source) { _, old -> max(old ?: 0L, until) }
+    }
+
+    private fun retryDelay(attempt: Int): Long =
+        (800L * (1L shl attempt.coerceAtMost(5))).coerceAtMost(MAX_BACKOFF_MS)
+
+    private fun sleepInterruptibly(durationMs: Long) {
+        var remaining = durationMs
+        while (remaining > 0L) {
+            if (Thread.currentThread().isInterrupted) {
+                throw InterruptedException("Загрузка отменена")
+            }
+            val part = minOf(remaining, 500L)
+            Thread.sleep(part)
+            remaining -= part
         }
     }
 
@@ -370,82 +362,111 @@ object LocalMapStyleServer {
         }
     }
 
-    private fun tileTemplate(source: String): String =
-        "http://127.0.0.1:$port/tile/$source/{z}/{x}/{y}.${tileExtension(source)}"
+    private fun tileTemplate(source: String): String {
+        val s = spec(source)
+        return "http://127.0.0.1:$port/tile/$source/{z}/{x}/{y}.${s.extension}"
+    }
 
-    private fun rasterStyle(
-        name: String,
-        source: String,
-        maxZoom: Int,
-        attribution: String
-    ): String = """
+    private fun localSingleStyle(name: String, source: String): String {
+        val s = spec(source)
+        return """
+            {
+              "version": 8,
+              "name": "$name",
+              "sources": {
+                "$source": {
+                  "type": "raster",
+                  "tiles": ["${tileTemplate(source)}"],
+                  "scheme": "xyz",
+                  "tileSize": 256,
+                  "minzoom": 0,
+                  "maxzoom": ${s.maxZoom}
+                }
+              },
+              "layers": [
+                {
+                  "id": "$source",
+                  "type": "raster",
+                  "source": "$source"
+                }
+              ]
+            }
+        """.trimIndent()
+    }
+
+    private fun localCombinedStyle(): String = """
         {
           "version": 8,
-          "name": "$name",
+          "name": "Esri Imagery + Relief Offline",
           "sources": {
-            "$source": {
+            "$SOURCE_IMAGERY": {
               "type": "raster",
-              "tiles": ["${tileTemplate(source)}"],
+              "tiles": ["${tileTemplate(SOURCE_IMAGERY)}"],
               "scheme": "xyz",
               "tileSize": 256,
               "minzoom": 0,
-              "maxzoom": $maxZoom,
-              "attribution": "$attribution"
+              "maxzoom": 23
+            },
+            "$SOURCE_HILLSHADE": {
+              "type": "raster",
+              "tiles": ["${tileTemplate(SOURCE_HILLSHADE)}"],
+              "scheme": "xyz",
+              "tileSize": 256,
+              "minzoom": 0,
+              "maxzoom": 23
+            },
+            "$SOURCE_TRANSPORT": {
+              "type": "raster",
+              "tiles": ["${tileTemplate(SOURCE_TRANSPORT)}"],
+              "scheme": "xyz",
+              "tileSize": 256,
+              "minzoom": 0,
+              "maxzoom": 23
+            },
+            "$SOURCE_BOUNDARIES": {
+              "type": "raster",
+              "tiles": ["${tileTemplate(SOURCE_BOUNDARIES)}"],
+              "scheme": "xyz",
+              "tileSize": 256,
+              "minzoom": 0,
+              "maxzoom": 23
             }
           },
           "layers": [
             {
-              "id": "$source",
+              "id": "imagery",
               "type": "raster",
-              "source": "$source"
-            }
-          ]
-        }
-    """.trimIndent()
-
-    private fun combinedStyle(): String = """
-        {
-          "version": 8,
-          "name": "Forest Navigator Satellite + Outdoor Offline",
-          "sources": {
-            "$SOURCE_SATELLITE": {
-              "type": "raster",
-              "tiles": ["${tileTemplate(SOURCE_SATELLITE)}"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 18
-            },
-            "$SOURCE_OUTDOOR": {
-              "type": "raster",
-              "tiles": ["${tileTemplate(SOURCE_OUTDOOR)}"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 18
-            }
-          },
-          "layers": [
-            {
-              "id": "satellite",
-              "type": "raster",
-              "source": "$SOURCE_SATELLITE"
+              "source": "$SOURCE_IMAGERY"
             },
             {
-              "id": "outdoor-overlay",
+              "id": "hillshade",
               "type": "raster",
-              "source": "$SOURCE_OUTDOOR",
+              "source": "$SOURCE_HILLSHADE",
               "paint": {
-                "raster-opacity": 0.24,
-                "raster-contrast": 0.12
+                "raster-opacity": 0.30,
+                "raster-contrast": 0.16,
+                "raster-saturation": -0.18
+              }
+            },
+            {
+              "id": "transport",
+              "type": "raster",
+              "source": "$SOURCE_TRANSPORT",
+              "paint": {
+                "raster-opacity": 0.86
+              }
+            },
+            {
+              "id": "boundaries",
+              "type": "raster",
+              "source": "$SOURCE_BOUNDARIES",
+              "paint": {
+                "raster-opacity": 0.94
               }
             }
           ]
         }
     """.trimIndent()
-
-    private fun contentType(source: String): String =
-        if (source == SOURCE_SATELLITE) "image/jpeg" else "image/png"
 
     private fun sendJson(client: Socket, body: String) =
         sendBinary(client, body.toByteArray(Charsets.UTF_8), "application/json; charset=utf-8")
@@ -470,6 +491,7 @@ object LocalMapStyleServer {
         val reason = when (status) {
             400 -> "Bad Request"
             404 -> "Not Found"
+            503 -> "Service Unavailable"
             else -> "Bad Gateway"
         }
         val headers = buildString {
@@ -483,12 +505,86 @@ object LocalMapStyleServer {
         output.flush()
     }
 
+    private fun spec(source: String): SourceSpec = when (source) {
+        SOURCE_STREET -> SourceSpec(
+            id = SOURCE_STREET,
+            extension = "jpg",
+            contentType = "image/jpeg",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/World_Street_Map/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        SOURCE_IMAGERY -> SourceSpec(
+            id = SOURCE_IMAGERY,
+            extension = "jpg",
+            contentType = "image/jpeg",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/World_Imagery/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        SOURCE_TOPO -> SourceSpec(
+            id = SOURCE_TOPO,
+            extension = "jpg",
+            contentType = "image/jpeg",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/World_Topo_Map/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        SOURCE_HILLSHADE -> SourceSpec(
+            id = SOURCE_HILLSHADE,
+            extension = "jpg",
+            contentType = "image/jpeg",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/Elevation/World_Hillshade/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        SOURCE_BOUNDARIES -> SourceSpec(
+            id = SOURCE_BOUNDARIES,
+            extension = "png",
+            contentType = "image/png",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/Reference/World_Boundaries_and_Places/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        SOURCE_TRANSPORT -> SourceSpec(
+            id = SOURCE_TRANSPORT,
+            extension = "png",
+            contentType = "image/png",
+            maxZoom = 23,
+            url = { z, x, y ->
+                "$BASE/Reference/World_Transportation/MapServer/tile/$z/$y/$x"
+            }
+        )
+
+        else -> error("Unknown source: $source")
+    }
+
+    private const val BASE =
+        "https://server.arcgisonline.com/ArcGIS/rest/services"
+
     private const val SOURCE_STREET = "street"
-    private const val SOURCE_SATELLITE = "satellite"
-    private const val SOURCE_OUTDOOR = "outdoor"
-    private val VALID_SOURCES = setOf(SOURCE_STREET, SOURCE_SATELLITE, SOURCE_OUTDOOR)
+    private const val SOURCE_IMAGERY = "imagery"
+    private const val SOURCE_TOPO = "topo"
+    private const val SOURCE_HILLSHADE = "hillshade"
+    private const val SOURCE_BOUNDARIES = "boundaries"
+    private const val SOURCE_TRANSPORT = "transport"
+
+    private const val CACHE_DIR = "map_cache_esri_v1"
+    private const val OFFLINE_DIR = "offline_regions_esri_v1"
 
     private const val CONNECT_TIMEOUT_MS = 10_000
-    private const val READ_TIMEOUT_MS = 20_000
-    private const val MAX_ATTEMPTS = 4
+    private const val READ_TIMEOUT_MS = 25_000
+    private const val MAX_ATTEMPTS = 5
+    private const val MAX_BACKOFF_MS = 30_000L
+    private const val MIN_TILE_BYTES = 128
 }

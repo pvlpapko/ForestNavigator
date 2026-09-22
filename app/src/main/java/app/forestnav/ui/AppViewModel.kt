@@ -30,23 +30,23 @@ import kotlinx.coroutines.withContext
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as ForestNavApplication
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val _online = MutableStateFlow(hasActiveNetwork())
+    private val _online = MutableStateFlow(hasInternetTransport())
     val online = _online.asStateFlow()
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            _online.value = true
+            _online.value = hasInternetTransport()
         }
 
         override fun onLost(network: Network) {
-            _online.value = connectivity.activeNetwork != null
+            _online.value = hasInternetTransport()
         }
 
         override fun onCapabilitiesChanged(
             network: Network,
             networkCapabilities: NetworkCapabilities
         ) {
-            _online.value = true
+            _online.value = hasInternetTransport()
         }
     }
 
@@ -86,7 +86,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
-        _online.value = hasActiveNetwork()
+        _online.value = hasInternetTransport()
         refreshWaypoints()
         refreshOfflineRegions()
         viewModelScope.launch {
@@ -204,8 +204,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateMapTilerKey(value: String) { app.settings.mapTilerKey = value }
-    fun mapTilerKey(): String = app.settings.mapTilerKey
     fun updateCustomStyle(value: String) { app.settings.customStyleUrl = value }
     fun customStyle(): String = app.settings.customStyleUrl
 
@@ -259,8 +257,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshWaypointsInternal() { _waypoints.value = app.database.listWaypoints() }
 
-    private fun hasActiveNetwork(): Boolean =
-        connectivity.activeNetwork != null
+    private fun hasInternetTransport(): Boolean {
+        val network = connectivity.activeNetwork ?: return false
+        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
 
     override fun onCleared() {
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }

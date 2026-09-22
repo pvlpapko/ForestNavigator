@@ -31,9 +31,9 @@ class OfflineMapManager(private val context: Context) {
     private data class Tile(val z: Int, val x: Int, val y: Int)
     private data class DownloadTask(val source: String, val tile: Tile)
 
-    private val root = File(context.filesDir, "offline_regions_0917_rebuild_v2").apply { mkdirs() }
+    private val root = LocalMapStyleServer.offlineRoot(context)
     private val coordinator = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "forest-offline-coordinator").apply { isDaemon = true }
+        Thread(runnable, "forest-esri-offline-coordinator").apply { isDaemon = true }
     }
     private val cancelRequested = AtomicBoolean(false)
     private val deletePartialOnCancel = AtomicBoolean(true)
@@ -122,6 +122,10 @@ class OfflineMapManager(private val context: Context) {
                 }
                 required = allTasks.size.toLong()
 
+                if (required == 0L) {
+                    throw IllegalStateException("Для выбранной области нет тайлов")
+                }
+
                 if (required > MAX_RESOURCES) {
                     throw IllegalStateException(
                         "Область слишком большая для выбранного масштаба: $required тайлов"
@@ -160,7 +164,7 @@ class OfflineMapManager(private val context: Context) {
 
                     val failures = Collections.synchronizedList(mutableListOf<DownloadTask>())
                     val pool = Executors.newFixedThreadPool(workerCountForRound(round)) { runnable ->
-                        Thread(runnable, "forest-offline-worker").apply { isDaemon = true }
+                        Thread(runnable, "forest-esri-offline-worker").apply { isDaemon = true }
                     }
                     currentWorkerPool = pool
                     val latch = CountDownLatch(remaining.size)
