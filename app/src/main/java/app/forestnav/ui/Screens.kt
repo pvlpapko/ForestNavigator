@@ -82,9 +82,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Esri World Imagery • близкое приближение без тайлов-заглушек"
-                                MapLayer.TERRAIN -> "OpenTopoMap • дороги, тропы, леса, вода, горизонтали и высоты"
-                                MapLayer.SATELLITE_TERRAIN -> "Esri спутник + теневой рельеф"
+                                MapLayer.SATELLITE -> "MapTiler Satellite • штатный API-стиль"
+                                MapLayer.TERRAIN -> "MapTiler Outdoor • леса, вода, дороги, тропы, горизонтали и высоты"
+                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + DEM-рельеф"
                                 else -> ""
                             }
                         } else {
@@ -946,12 +946,13 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Карты пересобраны на других источниках: обычная — Esri World Street Map, спутник — Esri World Imagery, " +
-                "рельеф — OpenTopoMap. При ручном жесте камера не дёргается; после жеста мягко возвращается к текущей позиции."
+            "Встроенные карты снова работают через MapTiler API: Streets, Satellite и Outdoor. " +
+                "При отсутствии интернета скачанные области открываются через локальный MapTiler-кэш. " +
+                "Сглаженное центрирование и поворот по компасу сохранены."
         )
         AssistChip(
             onClick = {},
-            label = { Text("Кэш и резервные источники включены") },
+            label = { Text("MapTiler API + офлайн-кэш") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
