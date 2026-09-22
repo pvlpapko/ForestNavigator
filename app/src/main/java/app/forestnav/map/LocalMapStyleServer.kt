@@ -64,7 +64,7 @@ object LocalMapStyleServer {
         if (!started.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_cache_clean_v1").apply { mkdirs() }
+        onlineCache = File(appContext.filesDir, "map_cache_detail_v2").apply { mkdirs() }
         offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
 
         try {
@@ -110,16 +110,16 @@ object LocalMapStyleServer {
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(SOURCE_MAP)
         MapLayer.SATELLITE -> listOf(SOURCE_SATELLITE)
-        MapLayer.TERRAIN -> listOf(SOURCE_TERRAIN)
-        MapLayer.SATELLITE_TERRAIN -> listOf(SOURCE_SATELLITE, SOURCE_TERRAIN)
+        MapLayer.TERRAIN -> listOf(SOURCE_TOPO, SOURCE_HILLSHADE)
+        MapLayer.SATELLITE_TERRAIN -> listOf(SOURCE_SATELLITE, SOURCE_HILLSHADE)
         MapLayer.CUSTOM -> emptyList()
     }
 
     fun tileExtension(source: String): String =
-        if (source == SOURCE_SATELLITE) "jpg" else "png"
+        if (source == SOURCE_MAP) "png" else "jpg"
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "clean_v1/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "detail_v2/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -333,24 +333,24 @@ object LocalMapStyleServer {
 
             SOURCE_SATELLITE -> listOf(
                 Provider(
+                    id = "maptiler-satellite",
+                    host = "api.maptiler.com",
+                    url = { zz, xx, yy ->
+                        "https://api.maptiler.com/maps/satellite-v4/256/$zz/$xx/$yy.jpg?key=$encodedKey"
+                    },
+                    minIntervalMs = 20L
+                ),
+                Provider(
                     id = "esri-imagery",
                     host = "server.arcgisonline.com",
                     url = { zz, xx, yy ->
                         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/$zz/$yy/$xx"
                     },
                     minIntervalMs = 25L
-                ),
-                Provider(
-                    id = "maptiler-satellite",
-                    host = "api.maptiler.com",
-                    url = { zz, xx, yy ->
-                        "https://api.maptiler.com/maps/satellite-v4/256/$zz/$xx/$yy.jpg?key=$encodedKey"
-                    },
-                    minIntervalMs = 25L
                 )
             )
 
-            SOURCE_TERRAIN -> listOf(
+            SOURCE_TOPO -> listOf(
                 Provider(
                     id = "esri-topo",
                     host = "server.arcgisonline.com",
@@ -358,20 +358,15 @@ object LocalMapStyleServer {
                         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/$zz/$yy/$xx"
                     },
                     minIntervalMs = 25L
-                ),
+                )
+            )
+
+            SOURCE_HILLSHADE -> listOf(
                 Provider(
-                    id = "opentopo",
-                    host = "tile.opentopomap.org",
+                    id = "esri-hillshade",
+                    host = "server.arcgisonline.com",
                     url = { zz, xx, yy ->
-                        "https://tile.opentopomap.org/$zz/$xx/$yy.png"
-                    },
-                    minIntervalMs = 100L
-                ),
-                Provider(
-                    id = "maptiler-terrain",
-                    host = "api.maptiler.com",
-                    url = { zz, xx, yy ->
-                        "https://api.maptiler.com/maps/outdoor-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
+                        "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/$zz/$yy/$xx"
                     },
                     minIntervalMs = 25L
                 )
@@ -419,16 +414,54 @@ object LocalMapStyleServer {
     private fun satelliteStyle(): String = rasterStyle(
         name = "Forest Navigator Satellite",
         source = SOURCE_SATELLITE,
-        maxZoom = 19,
-        attribution = "Imagery © Esri and contributors"
+        maxZoom = 22,
+        attribution = "Satellite imagery © MapTiler; fallback © Esri and contributors"
     )
 
-    private fun terrainStyle(): String = rasterStyle(
-        name = "Forest Navigator Relief",
-        source = SOURCE_TERRAIN,
-        maxZoom = 17,
-        attribution = "Tiles © Esri / OpenTopoMap; © OpenStreetMap contributors, SRTM"
-    )
+    private fun terrainStyle(): String = """
+        {
+          "version": 8,
+          "name": "Forest Navigator Relief",
+          "sources": {
+            "$SOURCE_TOPO": {
+              "type": "raster",
+              "tiles": ["${tileTemplate(SOURCE_TOPO)}"],
+              "scheme": "xyz",
+              "tileSize": 256,
+              "minzoom": 0,
+              "maxzoom": 19,
+              "attribution": "Topographic map © Esri and contributors"
+            },
+            "$SOURCE_HILLSHADE": {
+              "type": "raster",
+              "tiles": ["${tileTemplate(SOURCE_HILLSHADE)}"],
+              "scheme": "xyz",
+              "tileSize": 256,
+              "minzoom": 0,
+              "maxzoom": 13,
+              "attribution": "Hillshade © Esri and elevation data contributors"
+            }
+          },
+          "layers": [
+            {
+              "id": "topographic-base",
+              "type": "raster",
+              "source": "$SOURCE_TOPO"
+            },
+            {
+              "id": "hillshade-overlay",
+              "type": "raster",
+              "source": "$SOURCE_HILLSHADE",
+              "paint": {
+                "raster-opacity": 0.42,
+                "raster-contrast": 0.18,
+                "raster-brightness-min": 0.10,
+                "raster-brightness-max": 0.92
+              }
+            }
+          ]
+        }
+    """.trimIndent()
 
     private fun combinedStyle(): String = """
         {
@@ -441,17 +474,17 @@ object LocalMapStyleServer {
               "scheme": "xyz",
               "tileSize": 256,
               "minzoom": 0,
-              "maxzoom": 19,
-              "attribution": "Imagery © Esri and contributors"
+              "maxzoom": 22,
+              "attribution": "Satellite imagery © MapTiler; fallback © Esri and contributors"
             },
-            "$SOURCE_TERRAIN": {
+            "$SOURCE_HILLSHADE": {
               "type": "raster",
-              "tiles": ["${tileTemplate(SOURCE_TERRAIN)}"],
+              "tiles": ["${tileTemplate(SOURCE_HILLSHADE)}"],
               "scheme": "xyz",
               "tileSize": 256,
               "minzoom": 0,
-              "maxzoom": 17,
-              "attribution": "Tiles © Esri / OpenTopoMap; © OpenStreetMap contributors, SRTM"
+              "maxzoom": 13,
+              "attribution": "Hillshade © Esri and elevation data contributors"
             }
           },
           "layers": [
@@ -461,12 +494,14 @@ object LocalMapStyleServer {
               "source": "$SOURCE_SATELLITE"
             },
             {
-              "id": "terrain-overlay",
+              "id": "hillshade-overlay",
               "type": "raster",
-              "source": "$SOURCE_TERRAIN",
+              "source": "$SOURCE_HILLSHADE",
               "paint": {
-                "raster-opacity": 0.28,
-                "raster-contrast": 0.08
+                "raster-opacity": 0.24,
+                "raster-contrast": 0.16,
+                "raster-brightness-min": 0.12,
+                "raster-brightness-max": 0.95
               }
             }
           ]
@@ -504,7 +539,7 @@ object LocalMapStyleServer {
     """.trimIndent()
 
     private fun contentType(source: String): String =
-        if (source == SOURCE_SATELLITE) "image/jpeg" else "image/png"
+        if (source == SOURCE_MAP) "image/png" else "image/jpeg"
 
     private fun sendJson(client: Socket, body: String) =
         sendBinary(
@@ -548,8 +583,14 @@ object LocalMapStyleServer {
 
     private const val SOURCE_MAP = "map"
     private const val SOURCE_SATELLITE = "satellite"
-    private const val SOURCE_TERRAIN = "terrain"
-    private val VALID_SOURCES = setOf(SOURCE_MAP, SOURCE_SATELLITE, SOURCE_TERRAIN)
+    private const val SOURCE_TOPO = "topo"
+    private const val SOURCE_HILLSHADE = "hillshade"
+    private val VALID_SOURCES = setOf(
+        SOURCE_MAP,
+        SOURCE_SATELLITE,
+        SOURCE_TOPO,
+        SOURCE_HILLSHADE
+    )
 
     private const val CONNECT_TIMEOUT_MS = 4_000
     private const val READ_TIMEOUT_MS = 8_000
