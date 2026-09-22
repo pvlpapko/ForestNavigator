@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.hardware.GeomagneticField
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,6 +51,14 @@ private class NativeMapState {
     var initialCameraAnimationDone = false
     var lastRecenterToken: Int = -1
     var lastScaleMeters: Double = 0.0
+
+    var gestureActive = false
+    var lastCameraUpdateAt = 0L
+    var lastCameraLatitude: Double? = null
+    var lastCameraLongitude: Double? = null
+    var lastCameraBearing: Double? = null
+    var latestLocation: Location? = null
+    var latestHeading: Float? = null
 }
 
 @Composable
@@ -91,6 +100,7 @@ fun ForestMapView(
         mapView.onCreate(null)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) mapView.onStart()
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) mapView.onResume()
+
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching { mapView.onPause() }
@@ -105,16 +115,23 @@ fun ForestMapView(
             mapView.apply {
                 getMapAsync { map ->
                     state.map = map
+                    state.latestLocation = location
+                    state.latestHeading = heading
+
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isAttributionEnabled = true
+                    map.uiSettings.isRotateGesturesEnabled = false
+                    map.uiSettings.isTiltGesturesEnabled = false
                     map.setMaxZoomPreference(25.5)
 
                     map.addOnMapClickListener { point ->
                         if (currentPlacementEnabled.value) {
                             currentMapClick.value(point.latitude, point.longitude)
                             true
-                        } else false
+                        } else {
+                            false
+                        }
                     }
 
                     map.addOnMapLongClickListener { point ->
@@ -128,51 +145,201 @@ fun ForestMapView(
                         if (waypoint != null) {
                             currentWaypointClick.value(waypoint)
                             true
-                        } else false
+                        } else {
+                            false
+                        }
+                    }
+
+                    map.addOnCameraMoveStartedListener { reason ->
+                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                            state.gestureActive = true
+                        }
                     }
 
                     map.addOnCameraMoveListener {
                         publishScale(map, mapView, state, currentScaleCallback.value)
                     }
+
                     map.addOnCameraIdleListener {
-                        publishScale(map, mapView, state, currentScaleCallback.value, force = true)
+                        publishScale(
+                            map,
+                            mapView,
+                            state,
+                            currentScaleCallback.value,
+                            force = true
+                        )
+
+                        if (state.gestureActive) {
+                            state.gestureActive = false
+                            val latestLocation = state.latestLocation
+                            if (latestLocation != null) {
+                                syncCamera(
+                                    map = map,
+                                    state = state,
+                                    location = latestLocation,
+                                    heading = state.latestHeading,
+                                    force = true,
+                                    durationMs = 220
+                                )
+                            }
+                        }
                     }
 
-                    val target = LatLng(location.latitude, location.longitude)
                     map.cameraPosition = CameraPosition.Builder()
-                        .target(target)
-                        .zoom(10.5)
+                        .target(LatLng(location.latitude, location.longitude))
+                        .zoom(15.5)
+                        .bearing(trueHeading(location, heading) ?: 0.0)
                         .build()
 
                     state.lastRecenterToken = recenterToken
-                    applyStyle(context, map, state, styleUrl, location, heading, waypoints)
+                    applyStyle(
+                        context = context,
+                        map = map,
+                        state = state,
+                        styleUrl = styleUrl,
+                        location = location,
+                        heading = heading,
+                        waypoints = waypoints
+                    )
+
                     mapView.post {
-                        publishScale(map, mapView, state, currentScaleCallback.value, force = true)
+                        publishScale(
+                            map,
+                            mapView,
+                            state,
+                            currentScaleCallback.value,
+                            force = true
+                        )
                     }
                 }
             }
         },
         update = {
             val map = state.map ?: return@AndroidView
+            state.latestLocation = location
+            state.latestHeading = heading
 
-            if (styleUrl != null && styleUrl != state.loadedStyle && styleUrl != state.loadingStyle) {
-                applyStyle(context, map, state, styleUrl, location, heading, waypoints)
+            if (styleUrl != null &&
+                styleUrl != state.loadedStyle &&
+                styleUrl != state.loadingStyle
+            ) {
+                applyStyle(
+                    context = context,
+                    map = map,
+                    state = state,
+                    styleUrl = styleUrl,
+                    location = location,
+                    heading = heading,
+                    waypoints = waypoints
+                )
                 return@AndroidView
             }
 
-            updateLocationPuck(map, location, heading)
+            updateLocationPuck(map, location)
             updateWaypointAnnotations(context, map, state, waypoints)
 
             if (state.lastRecenterToken != recenterToken) {
-                val target = CameraPosition.Builder(map.cameraPosition)
-                    .target(LatLng(location.latitude, location.longitude))
-                    .zoom(maxOf(map.cameraPosition.zoom, 15.5))
-                    .build()
-                map.easeCamera(CameraUpdateFactory.newCameraPosition(target), 900)
+                state.gestureActive = false
+                syncCamera(
+                    map = map,
+                    state = state,
+                    location = location,
+                    heading = heading,
+                    force = true,
+                    durationMs = 420,
+                    minimumZoom = 17.0
+                )
                 state.lastRecenterToken = recenterToken
+            } else if (!state.gestureActive) {
+                syncCamera(
+                    map = map,
+                    state = state,
+                    location = location,
+                    heading = heading
+                )
             }
         }
     )
+}
+
+private fun syncCamera(
+    map: MapLibreMap,
+    state: NativeMapState,
+    location: Location,
+    heading: Float?,
+    force: Boolean = false,
+    durationMs: Int = 180,
+    minimumZoom: Double? = null
+) {
+    if (state.gestureActive && !force) return
+
+    val now = System.currentTimeMillis()
+    val bearing = trueHeading(location, heading) ?: map.cameraPosition.bearing
+
+    val previousLat = state.lastCameraLatitude
+    val previousLon = state.lastCameraLongitude
+    val movedMeters = if (previousLat == null || previousLon == null) {
+        Double.MAX_VALUE
+    } else {
+        val result = FloatArray(1)
+        Location.distanceBetween(
+            previousLat,
+            previousLon,
+            location.latitude,
+            location.longitude,
+            result
+        )
+        result[0].toDouble()
+    }
+
+    val previousBearing = state.lastCameraBearing
+    val bearingDelta = if (previousBearing == null) {
+        180.0
+    } else {
+        angularDistance(previousBearing, bearing)
+    }
+
+    val elapsed = now - state.lastCameraUpdateAt
+    if (!force) {
+        if (elapsed < CAMERA_MIN_INTERVAL_MS) return
+        if (movedMeters < MIN_CAMERA_MOVE_METERS &&
+            bearingDelta < MIN_CAMERA_BEARING_DELTA &&
+            elapsed < CAMERA_KEEPALIVE_MS
+        ) {
+            return
+        }
+    }
+
+    val current = map.cameraPosition
+    val targetZoom = minimumZoom?.let { maxOf(current.zoom, it) } ?: current.zoom
+    val target = CameraPosition.Builder(current)
+        .target(LatLng(location.latitude, location.longitude))
+        .zoom(targetZoom)
+        .bearing(bearing)
+        .tilt(0.0)
+        .build()
+
+    map.easeCamera(CameraUpdateFactory.newCameraPosition(target), durationMs)
+
+    state.lastCameraUpdateAt = now
+    state.lastCameraLatitude = location.latitude
+    state.lastCameraLongitude = location.longitude
+    state.lastCameraBearing = bearing
+}
+
+private fun angularDistance(a: Double, b: Double): Double =
+    abs(((b - a + 540.0) % 360.0) - 180.0)
+
+private fun trueHeading(location: Location, heading: Float?): Double? {
+    val magnetic = heading ?: return null
+    val altitude = if (location.hasAltitude()) location.altitude else 0.0
+    val declination = GeomagneticField(
+        location.latitude.toFloat(),
+        location.longitude.toFloat(),
+        altitude.toFloat(),
+        System.currentTimeMillis()
+    ).declination
+    return ((magnetic + declination + 360f) % 360f).toDouble()
 }
 
 private fun publishScale(
@@ -188,11 +355,16 @@ private fun publishScale(
     val zoom = map.cameraPosition.zoom
     val latitude = map.cameraPosition.target?.latitude ?: 0.0
     val metersPerPixel = 156543.03392 * cos(Math.toRadians(latitude)) / 2.0.pow(zoom)
-    val referencePixels = minOf(width * 0.32, 160.0 * mapView.resources.displayMetrics.density)
-    val scaleMeters = (metersPerPixel * referencePixels).coerceAtLeast(1.0)
+    val referencePixels = minOf(
+        width * 0.32,
+        160.0 * mapView.resources.displayMetrics.density
+    )
+    val scaleMeters = (metersPerPixel * referencePixels).coerceAtLeast(0.1)
 
     val changedEnough = state.lastScaleMeters <= 0.0 ||
-        abs(scaleMeters - state.lastScaleMeters) / state.lastScaleMeters > 0.025
+        abs(scaleMeters - state.lastScaleMeters) /
+        state.lastScaleMeters.coerceAtLeast(0.1) > 0.025
+
     if (force || changedEnough) {
         state.lastScaleMeters = scaleMeters
         callback(scaleMeters)
@@ -219,16 +391,29 @@ private fun applyStyle(
         state.waypointByMarkerId.clear()
         state.waypointFingerprint = 0
 
-        setupLocationPuck(context, map, style, location, heading)
+        setupLocationPuck(context, map, style, location)
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
-            val target = CameraPosition.Builder(map.cameraPosition)
-                .target(LatLng(location.latitude, location.longitude))
-                .zoom(16.0)
-                .build()
-            map.animateCamera(CameraUpdateFactory.newCameraPosition(target), 2200)
+            syncCamera(
+                map = map,
+                state = state,
+                location = location,
+                heading = heading,
+                force = true,
+                durationMs = 550,
+                minimumZoom = 16.5
+            )
             state.initialCameraAnimationDone = true
+        } else {
+            syncCamera(
+                map = map,
+                state = state,
+                location = location,
+                heading = heading,
+                force = true,
+                durationMs = 220
+            )
         }
     }
 
@@ -244,8 +429,7 @@ private fun setupLocationPuck(
     context: Context,
     map: MapLibreMap,
     style: Style,
-    location: Location,
-    heading: Float?
+    location: Location
 ) {
     val component = map.locationComponent
 
@@ -254,6 +438,7 @@ private fun setupLocationPuck(
             .bearingOnTop(true)
             .compassAnimationEnabled(true)
             .build()
+
         component.activateLocationComponent(
             LocationComponentActivationOptions.builder(context, style)
                 .useDefaultLocationEngine(false)
@@ -264,26 +449,16 @@ private fun setupLocationPuck(
     }
 
     component.isLocationComponentEnabled = true
-    component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
-    component.cameraMode = if (heading != null) {
-        CameraMode.TRACKING_COMPASS
-    } else {
-        CameraMode.TRACKING
-    }
+    component.cameraMode = CameraMode.NONE
+    component.renderMode = RenderMode.COMPASS
     component.setMaxAnimationFps(20)
     component.forceLocationUpdate(location)
 }
 
 @SuppressLint("MissingPermission")
-private fun updateLocationPuck(map: MapLibreMap, location: Location, heading: Float?) {
+private fun updateLocationPuck(map: MapLibreMap, location: Location) {
     val component = map.locationComponent
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
-        component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
-        component.cameraMode = if (heading != null) {
-            CameraMode.TRACKING_COMPASS
-        } else {
-            CameraMode.TRACKING
-        }
         component.forceLocationUpdate(location)
     }
 }
@@ -298,7 +473,9 @@ private fun updateWaypointAnnotations(
     val fingerprint = waypoints.fold(1) { acc, p -> 31 * acc + p.hashCode() }
     if (fingerprint == state.waypointFingerprint) return
 
-    state.waypointMarkers.forEach { marker -> runCatching { map.removeMarker(marker) } }
+    state.waypointMarkers.forEach { marker ->
+        runCatching { map.removeMarker(marker) }
+    }
     state.waypointMarkers = emptyList()
     state.waypointByMarkerId.clear()
 
@@ -306,11 +483,16 @@ private fun updateWaypointAnnotations(
         val marker = map.addMarker(
             MarkerOptions()
                 .position(LatLng(p.latitude, p.longitude))
-                .icon(state.waypointIcons.getOrPut(p.type) { createWaypointIcon(context, p.type) })
+                .icon(
+                    state.waypointIcons.getOrPut(p.type) {
+                        createWaypointIcon(context, p.type)
+                    }
+                )
                 .title(p.name)
                 .snippet(
-                    p.accuracyMeters?.let { "Точность ±${String.format("%.1f", it)} м" }
-                        ?: "Точка поставлена вручную на карте"
+                    p.accuracyMeters?.let {
+                        "Точность ±${String.format("%.1f", it)} м"
+                    } ?: "Точка поставлена вручную на карте"
                 )
         )
         state.waypointByMarkerId[marker.id] = p
@@ -336,6 +518,7 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
     }
+
     val radius = size * 0.46f
     canvas.drawCircle(size / 2f, size / 2f, radius, bg)
     canvas.drawCircle(size / 2f, size / 2f, radius, ring)
@@ -355,9 +538,15 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
         typeface = Typeface.DEFAULT_BOLD
         color = if (type == WaypointType.FAVORITE) Color.YELLOW else Color.WHITE
     }
+
     val fm = paint.fontMetrics
     val y = size / 2f - (fm.ascent + fm.descent) / 2f
     canvas.drawText(symbol, size / 2f, y, paint)
 
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
+
+private const val CAMERA_MIN_INTERVAL_MS = 180L
+private const val CAMERA_KEEPALIVE_MS = 900L
+private const val MIN_CAMERA_MOVE_METERS = 1.5
+private const val MIN_CAMERA_BEARING_DELTA = 1.8
