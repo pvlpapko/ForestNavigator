@@ -109,7 +109,7 @@ object LocalMapStyleServer {
         if (source == "satellite") "jpg" else "png"
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "v2/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "v3/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -218,7 +218,7 @@ object LocalMapStyleServer {
     }
 
     private fun onlineTile(source: String, z: Int, x: Int, y: Int): File =
-        File(onlineCache, "v2/$source/$z/$x/$y.${tileExtension(source)}")
+        File(onlineCache, "v3/$source/$z/$x/$y.${tileExtension(source)}")
 
     private fun fetchRemoteTile(source: String, z: Int, x: Int, y: Int): ByteArray {
         var lastError = "Не удалось получить тайл"
@@ -318,9 +318,9 @@ object LocalMapStyleServer {
     private fun remoteUrl(source: String, z: Int, x: Int, y: Int): String {
         val key = URLEncoder.encode(BuildConfig.MAPTILER_KEY, StandardCharsets.UTF_8.toString())
         return when (source) {
-            "map" -> "https://api.maptiler.com/maps/streets-v4/$z/$x/$y.png?key=$key"
-            "satellite" -> "https://api.maptiler.com/maps/satellite-v4/$z/$x/$y.jpg?key=$key"
-            "terrain" -> "https://api.maptiler.com/maps/outdoor-v4/$z/$x/$y.png?key=$key"
+            "map" -> "https://api.maptiler.com/maps/streets-v4/256/$z/$x/$y@2x.png?key=$key"
+            "satellite" -> "https://api.maptiler.com/maps/satellite-v4/256/$z/$x/$y@2x.jpg?key=$key"
+            "terrain" -> "https://api.maptiler.com/maps/outdoor-v4/256/$z/$x/$y@2x.png?key=$key"
             else -> error("Unknown map source: $source")
         }
     }
