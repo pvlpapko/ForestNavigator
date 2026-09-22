@@ -50,6 +50,7 @@ private class NativeMapState {
     var initialCameraAnimationDone = false
     var lastRecenterToken: Int = -1
     var lastScaleMeters: Double = 0.0
+    var lastMapBearing: Double? = null
 }
 
 @Composable
@@ -160,6 +161,7 @@ fun ForestMapView(
             }
 
             updateLocationPuck(map, location, heading)
+            updateMapBearing(map, state, heading)
             updateWaypointAnnotations(context, map, state, waypoints)
 
             if (state.lastRecenterToken != recenterToken) {
@@ -219,6 +221,7 @@ private fun applyStyle(
         state.waypointFingerprint = 0
 
         setupLocationPuck(context, map, style, location, heading)
+        updateMapBearing(map, state, heading, force = true)
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
@@ -235,6 +238,26 @@ private fun applyStyle(
         map.setStyle(Style.Builder().fromJson(MapStyles.jsonPayload(url)), onLoaded)
     } else {
         map.setStyle(url, onLoaded)
+    }
+}
+
+private fun updateMapBearing(
+    map: MapLibreMap,
+    state: NativeMapState,
+    heading: Float?,
+    force: Boolean = false
+) {
+    val target = heading?.toDouble() ?: return
+    val previous = state.lastMapBearing
+    val delta = if (previous == null) {
+        180.0
+    } else {
+        kotlin.math.abs(((target - previous + 540.0) % 360.0) - 180.0)
+    }
+
+    if (force || delta >= 1.5) {
+        map.easeCamera(CameraUpdateFactory.bearingTo(target), 140)
+        state.lastMapBearing = target
     }
 }
 
