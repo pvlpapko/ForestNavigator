@@ -7,7 +7,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.hardware.GeomagneticField
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -30,6 +29,7 @@ import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
@@ -249,42 +249,32 @@ private fun setupLocationPuck(
     val component = map.locationComponent
 
     if (!component.isLocationComponentActivated) {
+        val puckOptions = LocationComponentOptions.builder(context)
+            .bearingOnTop(false)
+            .compassAnimationEnabled(true)
+            .build()
         component.activateLocationComponent(
             LocationComponentActivationOptions.builder(context, style)
                 .useDefaultLocationEngine(false)
                 .useSpecializedLocationLayer(false)
+                .locationComponentOptions(puckOptions)
                 .build()
         )
     }
 
     component.isLocationComponentEnabled = true
     component.cameraMode = CameraMode.NONE
-    component.renderMode = if (heading != null) RenderMode.GPS else RenderMode.NORMAL
+    component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
     component.setMaxAnimationFps(20)
-    component.forceLocationUpdate(locationWithHeading(location, heading))
+    component.forceLocationUpdate(location)
 }
 
 @SuppressLint("MissingPermission")
 private fun updateLocationPuck(map: MapLibreMap, location: Location, heading: Float?) {
     val component = map.locationComponent
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
-        component.renderMode = if (heading != null) RenderMode.GPS else RenderMode.NORMAL
-        component.forceLocationUpdate(locationWithHeading(location, heading))
-    }
-}
-
-private fun locationWithHeading(location: Location, heading: Float?): Location {
-    if (heading == null) return location
-    val altitude = if (location.hasAltitude()) location.altitude else 0.0
-    val declination = GeomagneticField(
-        location.latitude.toFloat(),
-        location.longitude.toFloat(),
-        altitude.toFloat(),
-        System.currentTimeMillis()
-    ).declination
-    val trueHeading = (heading + declination + 360f) % 360f
-    return Location(location).apply {
-        bearing = trueHeading
+        component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
+        component.forceLocationUpdate(location)
     }
 }
 
