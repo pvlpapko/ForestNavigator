@@ -11,9 +11,8 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "1.0.1"
-        buildConfigField("String", "MAPTILER_KEY", "\"il3KGdrwRY1RGiUuAlLr\"")
+        versionCode = 31
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
