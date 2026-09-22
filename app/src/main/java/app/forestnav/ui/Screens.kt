@@ -729,9 +729,11 @@ fun CompassScreen(vm: AppViewModel) {
             )
         } else null
 
-        val relative = if (bearing != null && heading != null) {
-            (bearing - heading!! + 360f) % 360f
-        } else 0f
+        val relative = when {
+            bearing != null && heading != null -> (bearing - heading!! + 360f) % 360f
+            heading != null -> heading!!
+            else -> 0f
+        }
 
         Icon(
             Icons.Default.Navigation,
