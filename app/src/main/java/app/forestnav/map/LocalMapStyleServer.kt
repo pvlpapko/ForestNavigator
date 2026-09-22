@@ -64,7 +64,7 @@ object LocalMapStyleServer {
         if (!started.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_cache_detail_v2").apply { mkdirs() }
+        onlineCache = File(appContext.filesDir, "map_cache_detail_v3").apply { mkdirs() }
         offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
 
         try {
@@ -115,11 +115,14 @@ object LocalMapStyleServer {
         MapLayer.CUSTOM -> emptyList()
     }
 
-    fun tileExtension(source: String): String =
-        if (source == SOURCE_MAP) "png" else "jpg"
+    fun tileExtension(source: String): String = when (source) {
+        SOURCE_MAP, SOURCE_TOPO -> "png"
+        SOURCE_SATELLITE, SOURCE_HILLSHADE -> "jpg"
+        else -> "bin"
+    }
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "detail_v2/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "detail_v3/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -352,6 +355,19 @@ object LocalMapStyleServer {
 
             SOURCE_TOPO -> listOf(
                 Provider(
+                    id = "opentopo",
+                    host = "tile.opentopomap.org",
+                    url = { zz, xx, yy ->
+                        val sub = when ((xx + yy) % 3) {
+                            0 -> "a"
+                            1 -> "b"
+                            else -> "c"
+                        }
+                        "https://$sub.tile.opentopomap.org/$zz/$xx/$yy.png"
+                    },
+                    minIntervalMs = 90L
+                ),
+                Provider(
                     id = "esri-topo",
                     host = "server.arcgisonline.com",
                     url = { zz, xx, yy ->
@@ -430,7 +446,7 @@ object LocalMapStyleServer {
               "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 19,
-              "attribution": "Topographic map © Esri and contributors"
+              "attribution": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM; fallback © Esri"
             },
             "$SOURCE_HILLSHADE": {
               "type": "raster",
@@ -539,7 +555,7 @@ object LocalMapStyleServer {
     """.trimIndent()
 
     private fun contentType(source: String): String =
-        if (source == SOURCE_MAP) "image/png" else "image/jpeg"
+        if (source == SOURCE_MAP || source == SOURCE_TOPO) "image/png" else "image/jpeg"
 
     private fun sendJson(client: Socket, body: String) =
         sendBinary(
