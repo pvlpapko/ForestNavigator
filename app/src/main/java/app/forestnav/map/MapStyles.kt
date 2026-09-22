@@ -14,9 +14,9 @@ object MapStyles {
     private const val JSON_PREFIX = "json:"
 
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
-        MapLayer.MAP -> LocalMapStyleServer.mapUrl()
+        MapLayer.MAP -> OPEN_FREE_MAP
         MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
-        MapLayer.TERRAIN -> LocalMapStyleServer.terrainUrl()
+        MapLayer.TERRAIN -> "asset://terrain_fallback.json"
         MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()
         MapLayer.CUSTOM -> settings.customStyleUrl.takeIf { it.isNotBlank() }
     }
