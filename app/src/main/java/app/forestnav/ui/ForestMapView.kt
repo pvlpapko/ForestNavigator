@@ -108,6 +108,7 @@ fun ForestMapView(
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isAttributionEnabled = true
+                    map.setMaxZoomPreference(25.5)
 
                     map.addOnMapClickListener { point ->
                         if (currentPlacementEnabled.value) {
