@@ -109,7 +109,7 @@ object LocalMapStyleServer {
         if (source == "satellite") "jpg" else "png"
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "v3/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "v4/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -218,7 +218,7 @@ object LocalMapStyleServer {
     }
 
     private fun onlineTile(source: String, z: Int, x: Int, y: Int): File =
-        File(onlineCache, "v3/$source/$z/$x/$y.${tileExtension(source)}")
+        File(onlineCache, "v4/$source/$z/$x/$y.${tileExtension(source)}")
 
     private fun fetchRemoteTile(source: String, z: Int, x: Int, y: Int): ByteArray {
         var lastError = "Не удалось получить тайл"
@@ -318,9 +318,9 @@ object LocalMapStyleServer {
     private fun remoteUrl(source: String, z: Int, x: Int, y: Int): String {
         val key = URLEncoder.encode(BuildConfig.MAPTILER_KEY, StandardCharsets.UTF_8.toString())
         return when (source) {
-            "map" -> "https://api.maptiler.com/maps/streets-v4/256/$z/$x/$y@2x.png?key=$key"
-            "satellite" -> "https://api.maptiler.com/maps/satellite-v4/256/$z/$x/$y@2x.jpg?key=$key"
-            "terrain" -> "https://api.maptiler.com/maps/outdoor-v4/256/$z/$x/$y@2x.png?key=$key"
+            "map" -> "https://api.maptiler.com/maps/streets-v4/256/$z/$x/$y.png?key=$key"
+            "satellite" -> "https://api.maptiler.com/maps/satellite-v4/256/$z/$x/$y.jpg?key=$key"
+            "terrain" -> "https://api.maptiler.com/maps/outdoor-v4/256/$z/$x/$y.png?key=$key"
             else -> error("Unknown map source: $source")
         }
     }
@@ -341,7 +341,7 @@ object LocalMapStyleServer {
               "type": "raster",
               "tiles": ["${tileTemplate("satellite")}"],
               "scheme": "xyz",
-              "tileSize": 512,
+              "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 20
             },
@@ -349,7 +349,7 @@ object LocalMapStyleServer {
               "type": "raster",
               "tiles": ["${tileTemplate("terrain")}"],
               "scheme": "xyz",
-              "tileSize": 512,
+              "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 20
             }
@@ -382,7 +382,7 @@ object LocalMapStyleServer {
               "type": "raster",
               "tiles": ["${tileTemplate(source)}"],
               "scheme": "xyz",
-              "tileSize": 512,
+              "tileSize": 256,
               "minzoom": 0,
               "maxzoom": $maxZoom
             }
@@ -437,8 +437,8 @@ object LocalMapStyleServer {
         output.flush()
     }
 
-    private const val MIN_REMOTE_REQUEST_INTERVAL_MS = 40L
-    private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 40_000
-    private const val MAX_REMOTE_ATTEMPTS = 6
+    private const val MIN_REMOTE_REQUEST_INTERVAL_MS = 75L
+    private const val CONNECT_TIMEOUT_MS = 8_000
+    private const val READ_TIMEOUT_MS = 15_000
+    private const val MAX_REMOTE_ATTEMPTS = 3
 }
