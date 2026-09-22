@@ -15,7 +15,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +45,7 @@ fun MapScreen(vm: AppViewModel) {
     var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var pointPlacementMode by remember { mutableStateOf(false) }
     var selectedMapWaypoint by remember { mutableStateOf<Waypoint?>(null) }
+    var mapScaleMeters by remember { mutableDoubleStateOf(0.0) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -80,15 +83,15 @@ fun MapScreen(vm: AppViewModel) {
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
                                 MapLayer.SATELLITE -> "HD: MapTiler Satellite"
-                                MapLayer.TERRAIN -> "HD: OpenTopoMap + MapTiler Terrain RGB"
-                                MapLayer.SATELLITE_TERRAIN -> "HD: MapTiler Satellite + Terrain RGB hillshade"
+                                MapLayer.TERRAIN -> "HD: MapTiler Outdoor"
+                                MapLayer.SATELLITE_TERRAIN -> "HD: MapTiler Satellite + Outdoor overlay"
                                 else -> ""
                             }
                         } else {
                             when (layer) {
                                 MapLayer.SATELLITE -> "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
-                                MapLayer.TERRAIN -> "Бесплатный рельеф: OpenTopoMap • для большей детализации добавьте MapTiler key"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник + топографический overlay • с MapTiler key включится настоящий hillshade"
+                                MapLayer.TERRAIN -> "Рельеф: MapTiler Outdoor"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник + рельеф: MapTiler raster overlay"
                                 else -> ""
                             }
                         },
@@ -163,7 +166,31 @@ fun MapScreen(vm: AppViewModel) {
                         onWaypointClick = { waypoint ->
                             selectedMapWaypoint = waypoint
                             pointPlacementMode = false
-                        }
+                        },
+                        onMapScaleChanged = { mapScaleMeters = it }
+                    )
+                }
+
+                if (location != null) {
+                    val altitudeLabel = if (location!!.hasAltitude()) {
+                        "${location!!.altitude.roundToInt()} м"
+                    } else {
+                        "—"
+                    }
+                    Text(
+                        text = "↑ $altitudeLabel\n↔ ${mapScaleLabel(mapScaleMeters)}",
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 12.dp, bottom = 58.dp),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            shadow = Shadow(
+                                color = Color.Black,
+                                offset = Offset(0f, 1.5f),
+                                blurRadius = 4f
+                            )
+                        )
                     )
                 }
 
@@ -314,6 +341,17 @@ fun MapScreen(vm: AppViewModel) {
                 pendingMapPoint = null
             }
         )
+    }
+}
+
+private fun mapScaleLabel(meters: Double): String {
+    if (meters <= 0.0) return "—"
+    return if (meters < 1000.0) {
+        "${meters.roundToInt()} м"
+    } else {
+        val km = meters / 1000.0
+        if (km < 10.0) String.format(java.util.Locale.getDefault(), "%.1f км", km)
+        else "${km.roundToInt()} км"
     }
 }
 
@@ -771,6 +809,7 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
+                    "Загрузка продолжится в фоне при свёрнутом приложении; прогресс виден в уведомлении. " +
                     "После загрузки интернет для этой области не нужен."
             )
 
