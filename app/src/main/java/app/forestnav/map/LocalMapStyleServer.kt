@@ -306,12 +306,12 @@ object LocalMapStyleServer {
         return when (source) {
             SOURCE_MAP -> listOf(
                 Provider(
-                    id = "osm",
-                    host = "tile.openstreetmap.org",
+                    id = "esri-street",
+                    host = "server.arcgisonline.com",
                     url = { zz, xx, yy ->
-                        "https://tile.openstreetmap.org/$zz/$xx/$yy.png"
+                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/$zz/$yy/$xx"
                     },
-                    minIntervalMs = 80L
+                    minIntervalMs = 25L
                 ),
                 Provider(
                     id = "maptiler-map",
@@ -320,6 +320,14 @@ object LocalMapStyleServer {
                         "https://api.maptiler.com/maps/streets-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
                     },
                     minIntervalMs = 25L
+                ),
+                Provider(
+                    id = "osm",
+                    host = "tile.openstreetmap.org",
+                    url = { zz, xx, yy ->
+                        "https://tile.openstreetmap.org/$zz/$xx/$yy.png"
+                    },
+                    minIntervalMs = 100L
                 )
             )
 
@@ -344,12 +352,20 @@ object LocalMapStyleServer {
 
             SOURCE_TERRAIN -> listOf(
                 Provider(
+                    id = "esri-topo",
+                    host = "server.arcgisonline.com",
+                    url = { zz, xx, yy ->
+                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/$zz/$yy/$xx"
+                    },
+                    minIntervalMs = 25L
+                ),
+                Provider(
                     id = "opentopo",
                     host = "tile.opentopomap.org",
                     url = { zz, xx, yy ->
                         "https://tile.opentopomap.org/$zz/$xx/$yy.png"
                     },
-                    minIntervalMs = 90L
+                    minIntervalMs = 100L
                 ),
                 Provider(
                     id = "maptiler-terrain",
