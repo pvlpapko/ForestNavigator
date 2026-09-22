@@ -13,15 +13,12 @@ enum class MapLayer(val title: String) {
 }
 
 /**
- * Exact visual stack restored from the early API-connected versions.
+ * Online built-in maps use MapTiler's native styles directly.
  *
- * MAP: OpenFreeMap Liberty
- * SATELLITE: MapTiler satellite-v2 direct 512px raster tiles
- * TERRAIN: MapTiler Outdoor v4 official vector style
- * SATELLITE_TERRAIN: satellite-v2 + terrain-rgb-v2 direct tiles
- *
- * Direct tile templates intentionally keep the old TMS addressing and 512px
- * tile size that were used after the historical "Fix tile addressing" commits.
+ * The user's device has shown unstable raster rendering with the Vulkan backend,
+ * so the app uses MapLibre OpenGL-only. Satellite and Outdoor are never wrapped
+ * into a local file style while online. The combined mode is an inline style
+ * using MapTiler's documented Satellite v2 + Terrain RGB v2 sources.
  */
 object MapStyles {
     const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
@@ -60,11 +57,16 @@ object MapStyles {
         val safeKey = encoded(key)
         return when (layer) {
             MapLayer.MAP -> OPEN_FREE_MAP
-            MapLayer.SATELLITE -> satelliteStyle(settings, safeKey)
-            MapLayer.TERRAIN ->
-                "https://api.maptiler.com/maps/outdoor-v4/style.json?key=$safeKey&forestnav=0916"
 
-            MapLayer.SATELLITE_TERRAIN -> combinedStyle(settings, safeKey)
+            MapLayer.SATELLITE ->
+                "https://api.maptiler.com/maps/satellite-v4/style.json?key=$safeKey&forestnav=0917"
+
+            MapLayer.TERRAIN ->
+                "https://api.maptiler.com/maps/outdoor-v4/style.json?key=$safeKey&forestnav=0917"
+
+            MapLayer.SATELLITE_TERRAIN ->
+                combinedInlineStyle(safeKey)
+
             MapLayer.CUSTOM -> null
         }
     }
@@ -76,79 +78,22 @@ object MapStyles {
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
         layer == MapLayer.MAP || settings.mapTilerKey.isNotBlank()
 
-    private fun satelliteStyle(settings: SettingsStore, safeKey: String): String {
+    private fun combinedInlineStyle(safeKey: String): String {
         val json = """
             {
               "version": 8,
-              "name": "ForestNavigator MapTiler Satellite Original",
+              "name": "ForestNavigator Satellite + Terrain RGB",
               "sources": {
                 "satellite": {
                   "type": "raster",
-                  "tiles": [
-                    "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=$safeKey"
-                  ],
-                  "scheme": "tms",
-                  "tileSize": 512,
-                  "minzoom": 0,
-                  "maxzoom": 22,
-                  "attribution": "© MapTiler © OpenStreetMap contributors"
-                }
-              },
-              "layers": [
-                {
-                  "id": "background",
-                  "type": "background",
-                  "paint": {
-                    "background-color": "#263238"
-                  }
-                },
-                {
-                  "id": "satellite",
-                  "type": "raster",
-                  "source": "satellite",
-                  "paint": {
-                    "raster-opacity": 1.0,
-                    "raster-resampling": "linear"
-                  }
-                }
-              ]
-            }
-        """.trimIndent()
-
-        return settings.writeGeneratedStyle(
-            "maptiler_satellite_original_v2.json",
-            json
-        ) ?: LocalMapStyleServer.satelliteUrl()
-    }
-
-    private fun combinedStyle(settings: SettingsStore, safeKey: String): String {
-        val json = """
-            {
-              "version": 8,
-              "name": "ForestNavigator Satellite + Relief Original",
-              "sources": {
-                "satellite": {
-                  "type": "raster",
-                  "tiles": [
-                    "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=$safeKey"
-                  ],
-                  "scheme": "tms",
-                  "tileSize": 512,
-                  "minzoom": 0,
-                  "maxzoom": 22,
-                  "attribution": "© MapTiler © OpenStreetMap contributors"
+                  "url": "https://api.maptiler.com/tiles/satellite-v2/tiles.json?key=$safeKey",
+                  "tileSize": 512
                 },
                 "terrain": {
                   "type": "raster-dem",
-                  "tiles": [
-                    "https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.webp?key=$safeKey"
-                  ],
-                  "scheme": "tms",
+                  "url": "https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=$safeKey",
                   "tileSize": 512,
-                  "minzoom": 0,
-                  "maxzoom": 14,
-                  "encoding": "mapbox",
-                  "attribution": "© MapTiler © OpenStreetMap contributors"
+                  "maxzoom": 14
                 }
               },
               "layers": [
@@ -173,20 +118,17 @@ object MapStyles {
                   "type": "hillshade",
                   "source": "terrain",
                   "paint": {
-                    "hillshade-exaggeration": 0.64,
-                    "hillshade-shadow-color": "#261f18",
+                    "hillshade-exaggeration": 0.62,
+                    "hillshade-shadow-color": "#2c251e",
                     "hillshade-highlight-color": "#fff8e9",
-                    "hillshade-accent-color": "#7a684d"
+                    "hillshade-accent-color": "#7b694e"
                   }
                 }
               ]
             }
         """.trimIndent()
 
-        return settings.writeGeneratedStyle(
-            "maptiler_satellite_terrain_original_v2.json",
-            json
-        ) ?: LocalMapStyleServer.combinedUrl()
+        return JSON_PREFIX + json
     }
 
     private fun encoded(value: String): String =
