@@ -59,7 +59,7 @@ object MapStyles {
             } ?: LocalMapStyleServer.terrainUrl()
 
             MapLayer.SATELLITE_TERRAIN -> key?.let {
-                combinedStyle(encoded(it))
+                combinedStyle(settings, encoded(it))
             } ?: LocalMapStyleServer.combinedUrl()
 
             MapLayer.CUSTOM -> null
@@ -73,7 +73,7 @@ object MapStyles {
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
         layer == MapLayer.MAP || settings.mapTilerKey.isNotBlank()
 
-    private fun combinedStyle(safeKey: String): String {
+    private fun combinedStyle(settings: SettingsStore, safeKey: String): String {
         val json = """
             {
               "version": 8,
@@ -107,7 +107,7 @@ object MapStyles {
                   "type": "hillshade",
                   "source": "terrain",
                   "paint": {
-                    "hillshade-exaggeration": 0.64,
+                    "hillshade-exaggeration": 0.62,
                     "hillshade-shadow-color": "#261f18",
                     "hillshade-highlight-color": "#fff8e9",
                     "hillshade-accent-color": "#7a684d"
@@ -117,7 +117,10 @@ object MapStyles {
             }
         """.trimIndent()
 
-        return JSON_PREFIX + json
+        return settings.writeGeneratedStyle(
+            "satellite_relief_maptiler_original_v1.json",
+            json
+        ) ?: LocalMapStyleServer.combinedUrl()
     }
 
     private fun encoded(value: String): String =
