@@ -93,16 +93,22 @@ class OfflineMapManager(private val context: Context) {
             try {
                 partial.mkdirs()
 
-                val tiles = buildTileList(
-                    latitude = latitude,
-                    longitude = longitude,
-                    radiusKm = radiusKm,
-                    minZoom = minZoom.toInt(),
-                    maxZoom = maxZoom.toInt()
-                )
-
-                val allTasks = tiles.flatMap { tile ->
-                    sources.map { source -> DownloadTask(source, tile) }
+                val allTasks = sources.flatMap { source ->
+                    val sourceMaxZoom = minOf(
+                        maxZoom.toInt(),
+                        LocalMapStyleServer.maxDownloadZoom(source)
+                    )
+                    if (sourceMaxZoom < minZoom.toInt()) {
+                        emptyList()
+                    } else {
+                        buildTileList(
+                            latitude = latitude,
+                            longitude = longitude,
+                            radiusKm = radiusKm,
+                            minZoom = minZoom.toInt(),
+                            maxZoom = sourceMaxZoom
+                        ).map { tile -> DownloadTask(source, tile) }
+                    }
                 }
                 required = allTasks.size.toLong()
 
