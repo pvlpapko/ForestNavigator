@@ -82,9 +82,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "HD спутник: прямые MapTiler Satellite tiles • до z22"
-                                MapLayer.TERRAIN -> "Outdoor: дома, леса, вода, улицы, тропы, горизонтали и высоты"
-                                MapLayer.SATELLITE_TERRAIN -> "HD спутник + теневой рельеф"
+                                MapLayer.SATELLITE -> "Esri World Imagery • близкое приближение без тайлов-заглушек"
+                                MapLayer.TERRAIN -> "OpenTopoMap • дороги, тропы, леса, вода, горизонтали и высоты"
+                                MapLayer.SATELLITE_TERRAIN -> "Esri спутник + теневой рельеф"
                                 else -> ""
                             }
                         } else {
@@ -946,8 +946,8 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Режим «Рельеф» использует MapTiler Outdoor до z22: дома, леса, вода, улицы, тропы, горизонтали " +
-                "и отметки высот. Карта следует за текущей позицией и автоматически поворачивается по направлению телефона."
+            "Карты пересобраны на других источниках: обычная — Esri World Street Map, спутник — Esri World Imagery, " +
+                "рельеф — OpenTopoMap. При ручном жесте камера не дёргается; после жеста мягко возвращается к текущей позиции."
         )
         AssistChip(
             onClick = {},
@@ -975,7 +975,7 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text(
             "Обычный режим GNSS запрашивает обновления не чаще необходимого для пешей " +
                 "навигации. Режим повышенной точности включается только при сохранении " +
-                "точной точки. Компас ограничен примерно 10 обновлениями в секунду."
+                "точной точки. Компас сглаживается по круговой шкале и обновляет направление без мелкой дрожи."
         )
 
         HorizontalDivider()
