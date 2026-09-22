@@ -1,8 +1,6 @@
 package app.forestnav.data
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import app.forestnav.BuildConfig
 import java.io.File
 
@@ -19,14 +17,6 @@ class SettingsStore(context: Context) {
             // Runtime map access uses the embedded key above.
             prefs.edit().putString("maptiler_key_legacy", value.trim()).apply()
         }
-
-    fun hasValidatedInternet(): Boolean {
-        val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
-        val network = connectivity.activeNetwork ?: return false
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-    }
 
     var customStyleUrl: String
         get() = prefs.getString("custom_style_url", "").orEmpty()

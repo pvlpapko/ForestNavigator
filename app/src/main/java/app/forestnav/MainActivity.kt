@@ -24,10 +24,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         fineLocationGranted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || hasFineLocation()
-        if (fineLocationGranted) {
-            vm.startForegroundSensors()
-            requestNotificationPermissionIfNeeded()
-        }
+        if (fineLocationGranted) vm.startForegroundSensors()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,10 +38,7 @@ class MainActivity : ComponentActivity() {
                 requestPermissions = ::requestPermissions
             )
         }
-        if (fineLocationGranted) {
-            vm.startForegroundSensors()
-            requestNotificationPermissionIfNeeded()
-        }
+        if (fineLocationGranted) vm.startForegroundSensors()
     }
 
     override fun onResume() {
@@ -62,20 +56,8 @@ class MainActivity : ComponentActivity() {
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-        }
-    }
-
     private fun requestPermissions() {
-        val list = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
+        val list = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) list += Manifest.permission.POST_NOTIFICATIONS
         permissionLauncher.launch(list.toTypedArray())
     }

@@ -17,14 +17,11 @@ import kotlin.math.floor
 import kotlin.math.tan
 
 /**
- * Resumable offline downloader for the restored 0.9.3 map stack.
+ * Clean resumable offline downloader.
  *
- * Improvements over 0.9.3:
- * - conservative worker count to avoid bursts/timeouts;
- * - multiple retry rounds with increasing cool-down;
- * - only failed/missing tiles are retried;
- * - downloaded files remain in the partial region and are reused on resume;
- * - metadata is written before the first request so interrupted regions remain identifiable.
+ * The downloader does not participate in online rendering. It writes tiles into
+ * a separate versioned directory, retries only failed tiles, and reuses already
+ * completed files when the same region is resumed.
  */
 class OfflineMapManager(private val context: Context) {
     data class DownloadProgress(
@@ -41,15 +38,15 @@ class OfflineMapManager(private val context: Context) {
     private data class Tile(val z: Int, val x: Int, val y: Int)
     private data class DownloadTask(val source: String, val tile: Tile)
 
-    private val root = File(context.filesDir, "offline_regions").apply { mkdirs() }
+    private val root = LocalMapStyleServer.offlineRoot(context)
     private val coordinator = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "forest-offline-coordinator").apply { isDaemon = true }
+        Thread(runnable, "forest-offline-clean-coordinator").apply { isDaemon = true }
     }
     private val cancelRequested = AtomicBoolean(false)
-    private val deletePartialOnCancel = AtomicBoolean(true)
 
     @Volatile private var currentFuture: Future<*>? = null
     @Volatile private var currentWorkerPool: ExecutorService? = null
+    @Volatile private var keepPartialOnCancel: Boolean = true
 
     fun downloadAround(
         name: String,
@@ -62,13 +59,7 @@ class OfflineMapManager(private val context: Context) {
         regionId: Long? = null,
         onProgress: (DownloadProgress) -> Unit
     ) {
-        currentFuture?.takeIf { !it.isDone }?.let { previous ->
-            cancelDownload(deletePartial = false)
-            runCatching { previous.get(2L, TimeUnit.SECONDS) }
-        }
-
-        cancelRequested.set(false)
-        deletePartialOnCancel.set(true)
+        stopPreviousJob()
 
         val sources = LocalMapStyleServer.sourcesFor(layer)
         if (sources.isEmpty()) {
@@ -80,17 +71,26 @@ class OfflineMapManager(private val context: Context) {
             return
         }
 
+        cancelRequested.set(false)
+        keepPartialOnCancel = true
+
         val actualRegionId = regionId ?: System.currentTimeMillis()
-        val partial = File(root, ".partial-$actualRegionId")
-        val finalDir = File(root, actualRegionId.toString())
+        val partial = partialDir(actualRegionId)
+        val finalDir = finalDir(actualRegionId)
 
         currentFuture = coordinator.submit {
             val completed = AtomicLong(0L)
             val bytes = AtomicLong(0L)
-            var lastNotifyAt = 0L
             var required = 0L
+            var lastNotifyAt = 0L
 
-            fun publish(force: Boolean = false, active: Boolean = true) {
+            fun publish(
+                force: Boolean = false,
+                active: Boolean = true,
+                error: String? = null,
+                cancelled: Boolean = false,
+                complete: Boolean = false
+            ) {
                 val now = System.currentTimeMillis()
                 if (!force && now - lastNotifyAt < PROGRESS_INTERVAL_MS) return
                 lastNotifyAt = now
@@ -100,15 +100,18 @@ class OfflineMapManager(private val context: Context) {
                         completedResources = completed.get(),
                         requiredResources = required,
                         bytes = bytes.get(),
-                        active = active
+                        complete = complete,
+                        active = active,
+                        cancelled = cancelled,
+                        error = error
                     )
                 )
             }
 
             try {
                 partial.mkdirs()
-                writePartialMetadata(
-                    partial = partial,
+                writeMetadata(
+                    dir = partial,
                     name = name,
                     layer = layer,
                     latitude = latitude,
@@ -118,43 +121,29 @@ class OfflineMapManager(private val context: Context) {
                     maxZoom = maxZoom
                 )
 
-                val allTasks = sources.flatMap { source ->
-                    val sourceMaxZoom = minOf(
-                        maxZoom.toInt(),
-                        LocalMapStyleServer.maxDownloadZoom(source)
-                    )
-
-                    if (sourceMaxZoom < minZoom.toInt()) {
-                        emptyList()
-                    } else {
-                        buildTileList(
-                            latitude = latitude,
-                            longitude = longitude,
-                            radiusKm = radiusKm,
-                            minZoom = minZoom.toInt(),
-                            maxZoom = sourceMaxZoom
-                        ).map { tile ->
-                            DownloadTask(source, tile)
-                        }
-                    }
-                }
+                val allTasks = buildTasks(
+                    sources = sources,
+                    latitude = latitude,
+                    longitude = longitude,
+                    radiusKm = radiusKm,
+                    minZoom = minZoom.toInt(),
+                    maxZoom = maxZoom.toInt()
+                )
 
                 required = allTasks.size.toLong()
-
-                if (required == 0L) {
-                    throw IllegalStateException("Для выбранной области нет тайлов для загрузки")
+                if (required <= 0L) {
+                    error("Для выбранной области нет тайлов для загрузки")
                 }
-
                 if (required > MAX_RESOURCES) {
-                    throw IllegalStateException(
-                        "Область слишком большая для выбранного масштаба: $required тайлов"
+                    error(
+                        "Область слишком большая: $required тайлов. " +
+                            "Уменьшите радиус или масштаб."
                     )
                 }
 
                 val pending = ArrayList<DownloadTask>(allTasks.size)
-
                 allTasks.forEach { task ->
-                    val file = fileFor(partial, task)
+                    val file = tileFile(partial, task)
                     if (file.isFile && file.length() > 0L) {
                         completed.incrementAndGet()
                         bytes.addAndGet(file.length())
@@ -163,6 +152,7 @@ class OfflineMapManager(private val context: Context) {
                     }
                 }
 
+                writeRemaining(partial, pending.size)
                 publish(force = true)
 
                 var remaining: List<DownloadTask> = pending
@@ -172,7 +162,7 @@ class OfflineMapManager(private val context: Context) {
                     checkNotCancelled()
 
                     if (round > 0) {
-                        sleepWithCancellation(retryDelayMs(round))
+                        sleepWithCancellation(retryRoundDelay(round))
                     }
 
                     val failures = Collections.synchronizedList(
@@ -182,7 +172,7 @@ class OfflineMapManager(private val context: Context) {
                     val pool = Executors.newFixedThreadPool(workerCount) { runnable ->
                         Thread(
                             runnable,
-                            "forest-offline-worker-r$round"
+                            "forest-offline-clean-r$round"
                         ).apply { isDaemon = true }
                     }
                     currentWorkerPool = pool
@@ -192,24 +182,23 @@ class OfflineMapManager(private val context: Context) {
                         pool.execute {
                             try {
                                 checkNotCancelled()
-
-                                val file = fileFor(partial, task)
-                                if (file.isFile && file.length() > 0L) {
-                                    completed.incrementAndGet()
-                                    bytes.addAndGet(file.length())
+                                val file = tileFile(partial, task)
+                                val stored = if (file.isFile && file.length() > 0L) {
+                                    file.length()
                                 } else {
-                                    val stored = LocalMapStyleServer.downloadTileTo(
+                                    LocalMapStyleServer.downloadTileTo(
                                         source = task.source,
                                         z = task.tile.z,
                                         x = task.tile.x,
                                         y = task.tile.y,
                                         destination = file
                                     )
-                                    completed.incrementAndGet()
-                                    bytes.addAndGet(stored)
                                 }
+
+                                completed.incrementAndGet()
+                                bytes.addAndGet(stored)
                             } catch (_: InterruptedException) {
-                                // Cancellation is handled by the coordinator loop.
+                                // Coordinator reports cancellation.
                             } catch (_: Throwable) {
                                 if (!cancelRequested.get()) {
                                     failures += task
@@ -221,10 +210,7 @@ class OfflineMapManager(private val context: Context) {
                     }
 
                     while (!latch.await(PROGRESS_INTERVAL_MS, TimeUnit.MILLISECONDS)) {
-                        if (cancelRequested.get() || Thread.currentThread().isInterrupted) {
-                            pool.shutdownNow()
-                            throw InterruptedException("Загрузка отменена")
-                        }
+                        checkNotCancelled()
                         publish()
                     }
 
@@ -233,26 +219,21 @@ class OfflineMapManager(private val context: Context) {
                     currentWorkerPool = null
 
                     remaining = failures.toList()
+                    writeRemaining(partial, remaining.size)
                     publish(force = true)
-
-                    if (remaining.isNotEmpty()) {
-                        File(partial, "remaining.txt").writeText(
-                            remaining.size.toString(),
-                            Charsets.UTF_8
-                        )
-                    } else {
-                        File(partial, "remaining.txt").delete()
-                    }
                 }
 
                 checkNotCancelled()
 
                 if (remaining.isNotEmpty()) {
-                    throw IllegalStateException(
-                        "Осталось скачать ${remaining.size} тайлов из $required. " +
-                            "Скачанная часть сохранена. Нажмите «Скачать» ещё раз — " +
-                            "загрузка продолжится только с недостающих тайлов."
+                    publish(
+                        force = true,
+                        active = false,
+                        error = "Осталось ${remaining.size} из $required тайлов. " +
+                            "Уже скачанное сохранено. Повторное нажатие «Скачать» " +
+                            "продолжит только недостающие тайлы."
                     )
+                    return@submit
                 }
 
                 File(partial, "remaining.txt").delete()
@@ -267,79 +248,92 @@ class OfflineMapManager(private val context: Context) {
                     partial.deleteRecursively()
                 }
 
-                onProgress(
-                    DownloadProgress(
-                        regionId = actualRegionId,
-                        completedResources = completed.get(),
-                        requiredResources = required,
-                        bytes = bytes.get(),
-                        complete = true
-                    )
+                publish(
+                    force = true,
+                    active = false,
+                    complete = true
                 )
             } catch (_: InterruptedException) {
                 currentWorkerPool?.shutdownNow()
 
-                if (deletePartialOnCancel.get()) {
+                if (!keepPartialOnCancel) {
                     partial.deleteRecursively()
                 }
 
-                onProgress(
-                    DownloadProgress(
-                        regionId = actualRegionId,
-                        completedResources = completed.get(),
-                        requiredResources = required,
-                        bytes = bytes.get(),
-                        cancelled = true
-                    )
+                publish(
+                    force = true,
+                    active = false,
+                    cancelled = true
                 )
             } catch (t: Throwable) {
                 currentWorkerPool?.shutdownNow()
 
-                onProgress(
-                    DownloadProgress(
-                        regionId = actualRegionId,
-                        completedResources = completed.get(),
-                        requiredResources = required,
-                        bytes = bytes.get(),
-                        error = t.message ?: "Ошибка загрузки"
-                    )
+                publish(
+                    force = true,
+                    active = false,
+                    error = t.message ?: "Ошибка загрузки"
                 )
             } finally {
                 currentWorkerPool = null
                 currentFuture = null
                 cancelRequested.set(false)
-                deletePartialOnCancel.set(true)
+                keepPartialOnCancel = true
             }
         }
     }
 
-    fun cancelDownload(deletePartial: Boolean = true) {
-        deletePartialOnCancel.set(deletePartial)
+    fun cancelDownload(deletePartial: Boolean = false) {
+        keepPartialOnCancel = !deletePartial
         cancelRequested.set(true)
         currentWorkerPool?.shutdownNow()
         currentFuture?.cancel(true)
     }
 
     fun hasPartial(regionId: Long): Boolean =
-        File(root, ".partial-$regionId").isDirectory
+        partialDir(regionId).isDirectory
 
     fun listRegions(
         onResult: (List<Pair<Long, String>>) -> Unit,
         onError: (String) -> Unit
     ) {
         runCatching {
-            root.listFiles()
-                .orEmpty()
-                .filter { it.isDirectory && !it.name.startsWith(".partial-") }
-                .mapNotNull { dir ->
-                    val id = dir.name.toLongOrNull() ?: return@mapNotNull null
-                    val name = File(dir, "name.txt")
+            val result = mutableListOf<Pair<Long, String>>()
+
+            root.listFiles().orEmpty().forEach { dir ->
+                if (!dir.isDirectory) return@forEach
+
+                val partial = dir.name.startsWith(PARTIAL_PREFIX)
+                val id = if (partial) {
+                    dir.name.removePrefix(PARTIAL_PREFIX).toLongOrNull()
+                } else {
+                    dir.name.toLongOrNull()
+                } ?: return@forEach
+
+                val baseName = File(dir, "name.txt")
+                    .takeIf { it.isFile }
+                    ?.readText(Charsets.UTF_8)
+                    .orEmpty()
+                    .ifBlank { "Офлайн-область #$id" }
+
+                val label = if (partial) {
+                    val remaining = File(dir, "remaining.txt")
                         .takeIf { it.isFile }
                         ?.readText(Charsets.UTF_8)
-                        .orEmpty()
-                    id to name
+                        ?.toIntOrNull()
+
+                    if (remaining != null && remaining > 0) {
+                        "⏸ $baseName • осталось $remaining"
+                    } else {
+                        "⏸ $baseName"
+                    }
+                } else {
+                    baseName
                 }
-                .sortedByDescending { it.first }
+
+                result += id to label
+            }
+
+            result.sortedByDescending { it.first }
         }.onSuccess(onResult).onFailure {
             onError(it.message ?: "Не удалось прочитать офлайн-области")
         }
@@ -351,14 +345,13 @@ class OfflineMapManager(private val context: Context) {
         onError: (String) -> Unit
     ) {
         runCatching {
-            val finalDir = File(root, id.toString())
-            val partialDir = File(root, ".partial-$id")
+            val final = finalDir(id)
+            val partial = partialDir(id)
 
-            if (finalDir.exists() && !finalDir.deleteRecursively()) {
+            if (final.exists() && !final.deleteRecursively()) {
                 error("Не удалось удалить область")
             }
-
-            if (partialDir.exists() && !partialDir.deleteRecursively()) {
+            if (partial.exists() && !partial.deleteRecursively()) {
                 error("Не удалось удалить незавершённую область")
             }
         }.onSuccess {
@@ -368,7 +361,45 @@ class OfflineMapManager(private val context: Context) {
         }
     }
 
-    private fun fileFor(regionDir: File, task: DownloadTask): File =
+    private fun stopPreviousJob() {
+        val previous = currentFuture ?: return
+        if (previous.isDone) return
+
+        cancelDownload(deletePartial = false)
+        runCatching { previous.get(3L, TimeUnit.SECONDS) }
+    }
+
+    private fun buildTasks(
+        sources: List<String>,
+        latitude: Double,
+        longitude: Double,
+        radiusKm: Double,
+        minZoom: Int,
+        maxZoom: Int
+    ): List<DownloadTask> {
+        return sources.flatMap { source ->
+            val sourceMaxZoom = minOf(
+                maxZoom,
+                LocalMapStyleServer.maxDownloadZoom(source)
+            )
+
+            if (sourceMaxZoom < minZoom) {
+                emptyList()
+            } else {
+                buildTileList(
+                    latitude = latitude,
+                    longitude = longitude,
+                    radiusKm = radiusKm,
+                    minZoom = minZoom,
+                    maxZoom = sourceMaxZoom
+                ).map { tile ->
+                    DownloadTask(source, tile)
+                }
+            }
+        }
+    }
+
+    private fun tileFile(regionDir: File, task: DownloadTask): File =
         LocalMapStyleServer.tileFile(
             regionDir,
             task.source,
@@ -377,8 +408,8 @@ class OfflineMapManager(private val context: Context) {
             task.tile.y
         )
 
-    private fun writePartialMetadata(
-        partial: File,
+    private fun writeMetadata(
+        dir: File,
         name: String,
         layer: MapLayer,
         latitude: Double,
@@ -387,32 +418,32 @@ class OfflineMapManager(private val context: Context) {
         minZoom: Double,
         maxZoom: Double
     ) {
-        File(partial, "name.txt").writeText(name, Charsets.UTF_8)
-        File(partial, "layer.txt").writeText(layer.name, Charsets.UTF_8)
-        File(partial, "radius.txt").writeText(radiusKm.toString(), Charsets.UTF_8)
-        File(partial, "center.txt").writeText(
-            "$latitude,$longitude",
-            Charsets.UTF_8
-        )
-        File(partial, "zoom.txt").writeText(
-            "$minZoom,$maxZoom",
-            Charsets.UTF_8
-        )
+        File(dir, "name.txt").writeText(name, Charsets.UTF_8)
+        File(dir, "layer.txt").writeText(layer.name, Charsets.UTF_8)
+        File(dir, "radius.txt").writeText(radiusKm.toString(), Charsets.UTF_8)
+        File(dir, "center.txt").writeText("$latitude,$longitude", Charsets.UTF_8)
+        File(dir, "zoom.txt").writeText("$minZoom,$maxZoom", Charsets.UTF_8)
+    }
+
+    private fun writeRemaining(dir: File, count: Int) {
+        File(dir, "remaining.txt").writeText(count.toString(), Charsets.UTF_8)
     }
 
     private fun workerCountForRound(round: Int): Int = when {
         round <= 1 -> 4
-        round <= 4 -> 3
-        else -> 2
+        round <= 3 -> 3
+        round <= 5 -> 2
+        else -> 1
     }
 
-    private fun retryDelayMs(round: Int): Long = when (round) {
+    private fun retryRoundDelay(round: Int): Long = when (round) {
         1 -> 1_500L
         2 -> 3_000L
-        3 -> 6_000L
-        4 -> 10_000L
-        5 -> 15_000L
-        else -> 20_000L
+        3 -> 5_000L
+        4 -> 8_000L
+        5 -> 12_000L
+        6 -> 18_000L
+        else -> 25_000L
     }
 
     private fun sleepWithCancellation(durationMs: Long) {
@@ -478,8 +509,15 @@ class OfflineMapManager(private val context: Context) {
         return floor(value).toInt()
     }
 
+    private fun partialDir(id: Long): File =
+        File(root, "$PARTIAL_PREFIX$id")
+
+    private fun finalDir(id: Long): File =
+        File(root, id.toString())
+
     companion object {
-        private const val MAX_DOWNLOAD_ROUNDS = 7
+        private const val PARTIAL_PREFIX = ".partial-"
+        private const val MAX_DOWNLOAD_ROUNDS = 8
         private const val MAX_RESOURCES = 60_000L
         private const val PROGRESS_INTERVAL_MS = 300L
     }
