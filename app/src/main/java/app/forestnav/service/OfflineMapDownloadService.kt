@@ -153,7 +153,6 @@ class OfflineMapDownloadService : Service() {
         running = false
         runningRegionId = null
         currentSpec = null
-        clearJob()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -175,14 +174,17 @@ class OfflineMapDownloadService : Service() {
     }
 
     private fun cancelByUser() {
-        manager.cancelDownload(deletePartial = true)
+        currentSpec?.let { saveJob(it, active = false) }
+        manager.cancelDownload(deletePartial = false)
         OfflineMapDownloadState.publish(
-            OfflineMapManager.DownloadProgress(cancelled = true)
+            OfflineMapManager.DownloadProgress(
+                regionId = runningRegionId,
+                cancelled = true
+            )
         )
         running = false
         runningRegionId = null
         currentSpec = null
-        clearJob()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -244,7 +246,7 @@ class OfflineMapDownloadService : Service() {
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setContentIntent(openIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отменить", cancelIntent)
+            .addAction(android.R.drawable.ic_media_pause, "Пауза", cancelIntent)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .apply {
                 if (required > 0L) setProgress(100, percent, false)
