@@ -91,7 +91,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshOfflineRegions()
         viewModelScope.launch {
             download.collectLatest { progress ->
-                if (progress?.complete == true) refreshOfflineRegions()
+                if (progress?.complete == true ||
+                    progress?.cancelled == true ||
+                    progress?.error != null
+                ) {
+                    refreshOfflineRegions()
+                }
             }
         }
     }
