@@ -82,16 +82,16 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "HD: MapTiler Satellite"
-                                MapLayer.TERRAIN -> "HD: MapTiler Outdoor"
-                                MapLayer.SATELLITE_TERRAIN -> "HD: MapTiler Satellite + Outdoor overlay"
+                                MapLayer.SATELLITE -> "HD спутник: MapTiler • близкое приближение до z22"
+                                MapLayer.TERRAIN -> "Рельеф: топографическая карта + hillshade"
+                                MapLayer.SATELLITE_TERRAIN -> "HD спутник + hillshade рельеф"
                                 else -> ""
                             }
                         } else {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
-                                MapLayer.TERRAIN -> "Рельеф: MapTiler Outdoor"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник + рельеф: MapTiler raster overlay"
+                                MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
+                                MapLayer.TERRAIN -> "Рельеф: топография + теневой рельеф"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
                                 else -> ""
                             }
                         },
