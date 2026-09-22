@@ -3,45 +3,35 @@ package app.forestnav.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import app.forestnav.BuildConfig
-import java.io.File
 
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences("forestnav_settings", Context.MODE_PRIVATE)
-
-    // The app is personal-use only. The MapTiler key is baked into BuildConfig
-    // so map layers cannot be broken by an empty/stale value in SharedPreferences.
-    var mapTilerKey: String
-        get() = BuildConfig.MAPTILER_KEY
-        set(value) {
-            // Kept only for source/API compatibility with older builds.
-            // Runtime map access uses the embedded key above.
-            prefs.edit().putString("maptiler_key_legacy", value.trim()).apply()
-        }
+    private val prefs = appContext.getSharedPreferences(
+        "forestnav_settings",
+        Context.MODE_PRIVATE
+    )
 
     fun hasValidatedInternet(): Boolean {
-        val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
+        val connectivity =
+            appContext.getSystemService(ConnectivityManager::class.java)
         val network = connectivity.activeNetwork ?: return false
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val capabilities =
+            connectivity.getNetworkCapabilities(network) ?: return false
+
+        return capabilities.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_INTERNET
+        )
     }
 
     var customStyleUrl: String
         get() = prefs.getString("custom_style_url", "").orEmpty()
-        set(value) = prefs.edit().putString("custom_style_url", value.trim()).apply()
+        set(value) = prefs.edit()
+            .putString("custom_style_url", value.trim())
+            .apply()
 
     var trackingMode: String
         get() = prefs.getString("tracking_mode", "NORMAL") ?: "NORMAL"
-        set(value) = prefs.edit().putString("tracking_mode", value).apply()
-
-    fun writeGeneratedStyle(fileName: String, json: String): String? = runCatching {
-        val dir = File(appContext.filesDir, "map_styles").apply { mkdirs() }
-        val file = File(dir, fileName)
-        if (!file.exists() || file.readText(Charsets.UTF_8) != json) {
-            file.writeText(json, Charsets.UTF_8)
-        }
-        file.toURI().toString()
-    }.getOrNull()
+        set(value) = prefs.edit()
+            .putString("tracking_mode", value)
+            .apply()
 }
