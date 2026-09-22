@@ -39,6 +39,7 @@ fun MapScreen(vm: AppViewModel) {
     val precise by vm.preciseState.collectAsState()
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
+    val online by vm.online.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -82,9 +83,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "MapTiler Satellite • штатный API-стиль"
-                                MapLayer.TERRAIN -> "MapTiler Outdoor • леса, вода, дороги, тропы, горизонтали и высоты"
-                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + DEM-рельеф"
+                                MapLayer.SATELLITE -> "MapTiler Satellite v4 • исходный HD-стиль"
+                                MapLayer.TERRAIN -> "MapTiler Outdoor v4 • исходный рельеф с лесами, водой, дорогами и высотами"
+                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + Terrain RGB hillshade"
                                 else -> ""
                             }
                         } else {
@@ -153,7 +154,7 @@ fun MapScreen(vm: AppViewModel) {
                         location = location!!,
                         heading = heading,
                         waypoints = waypoints,
-                        styleUrl = vm.styleUrl(),
+                        styleUrl = vm.styleUrl(online),
                         recenterToken = recenterToken,
                         pointPlacementEnabled = pointPlacementMode,
                         onMapClick = { lat, lon ->
@@ -946,9 +947,9 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Встроенные карты снова работают через MapTiler API: Streets, Satellite и Outdoor. " +
-                "При отсутствии интернета скачанные области открываются через локальный MapTiler-кэш. " +
-                "Сглаженное центрирование и поворот по компасу сохранены."
+            "Онлайн-карты возвращены к ранней рабочей схеме: обычная карта — OpenFreeMap Liberty, " +
+                "спутник — оригинальный MapTiler Satellite v4, рельеф — оригинальный MapTiler Outdoor v4. " +
+                "После ручного просмотра карта остаётся там, где вы её оставили; режим слежения включается кнопкой «Я здесь»."
         )
         AssistChip(
             onClick = {},
