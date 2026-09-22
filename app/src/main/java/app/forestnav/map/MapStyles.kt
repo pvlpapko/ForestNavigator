@@ -11,13 +11,12 @@ enum class MapLayer(val title: String) {
 }
 
 object MapStyles {
-    const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
     private const val JSON_PREFIX = "json:"
 
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
-        MapLayer.MAP -> OPEN_FREE_MAP
+        MapLayer.MAP -> LocalMapStyleServer.mapUrl()
         MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
-        MapLayer.TERRAIN -> "asset://terrain_fallback.json"
+        MapLayer.TERRAIN -> LocalMapStyleServer.terrainUrl()
         MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()
         MapLayer.CUSTOM -> settings.customStyleUrl.takeIf { it.isNotBlank() }
     }
@@ -27,8 +26,5 @@ object MapStyles {
     fun jsonPayload(value: String): String = value.removePrefix(JSON_PREFIX)
 
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
-        settings.mapTilerKey.isNotBlank() &&
-            (layer == MapLayer.SATELLITE ||
-                layer == MapLayer.TERRAIN ||
-                layer == MapLayer.SATELLITE_TERRAIN)
+        layer != MapLayer.CUSTOM
 }
