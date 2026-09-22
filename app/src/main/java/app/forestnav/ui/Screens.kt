@@ -15,7 +15,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,12 +39,14 @@ fun MapScreen(vm: AppViewModel) {
     val precise by vm.preciseState.collectAsState()
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
+    val online by vm.online.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
     var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var pointPlacementMode by remember { mutableStateOf(false) }
     var selectedMapWaypoint by remember { mutableStateOf<Waypoint?>(null) }
+    var mapScaleMeters by remember { mutableDoubleStateOf(0.0) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -79,16 +83,16 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "HD: MapTiler Satellite"
-                                MapLayer.TERRAIN -> "HD: OpenTopoMap + MapTiler Terrain RGB"
-                                MapLayer.SATELLITE_TERRAIN -> "HD: MapTiler Satellite + Terrain RGB hillshade"
+                                MapLayer.SATELLITE -> "MapTiler Satellite v4 • исходный HD-стиль"
+                                MapLayer.TERRAIN -> "MapTiler Outdoor v4 • исходный рельеф с лесами, водой, дорогами и высотами"
+                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + Terrain RGB hillshade"
                                 else -> ""
                             }
                         } else {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Бесплатный спутник: Sentinel-2 • для HD добавьте MapTiler key"
-                                MapLayer.TERRAIN -> "Бесплатный рельеф: OpenTopoMap • для большей детализации добавьте MapTiler key"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник + топографический overlay • с MapTiler key включится настоящий hillshade"
+                                MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
+                                MapLayer.TERRAIN -> "Рельеф: топография + теневой рельеф"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
                                 else -> ""
                             }
                         },
@@ -148,8 +152,9 @@ fun MapScreen(vm: AppViewModel) {
                     ForestMapView(
                         modifier = Modifier.fillMaxSize(),
                         location = location!!,
+                        heading = heading,
                         waypoints = waypoints,
-                        styleUrl = vm.styleUrl(),
+                        styleUrl = vm.styleUrl(online),
                         recenterToken = recenterToken,
                         pointPlacementEnabled = pointPlacementMode,
                         onMapClick = { lat, lon ->
@@ -163,7 +168,31 @@ fun MapScreen(vm: AppViewModel) {
                         onWaypointClick = { waypoint ->
                             selectedMapWaypoint = waypoint
                             pointPlacementMode = false
-                        }
+                        },
+                        onMapScaleChanged = { mapScaleMeters = it }
+                    )
+                }
+
+                if (location != null) {
+                    val altitudeLabel = if (location!!.hasAltitude()) {
+                        "${location!!.altitude.roundToInt()} м"
+                    } else {
+                        "—"
+                    }
+                    Text(
+                        text = "↑ $altitudeLabel\n↔ ${mapScaleLabel(mapScaleMeters)}",
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 12.dp, bottom = 58.dp),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            shadow = Shadow(
+                                color = Color.Black,
+                                offset = Offset(0f, 1.5f),
+                                blurRadius = 4f
+                            )
+                        )
                     )
                 }
 
@@ -317,6 +346,19 @@ fun MapScreen(vm: AppViewModel) {
     }
 }
 
+private fun mapScaleLabel(meters: Double): String {
+    if (meters <= 0.0) return "—"
+    return when {
+        meters < 10.0 -> String.format(java.util.Locale.getDefault(), "%.1f м", meters)
+        meters < 1000.0 -> "${meters.roundToInt()} м"
+        else -> {
+            val km = meters / 1000.0
+            if (km < 10.0) String.format(java.util.Locale.getDefault(), "%.1f км", km)
+            else "${km.roundToInt()} км"
+        }
+    }
+}
+
 @Composable
 private fun WaypointMapCard(
     waypoint: Waypoint,
@@ -427,7 +469,8 @@ private fun NavigationMapCard(
         Text(
             Geo.distanceLabel(distance),
             style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFFFF2D2D)
         )
     }
 
@@ -689,9 +732,11 @@ fun CompassScreen(vm: AppViewModel) {
             )
         } else null
 
-        val relative = if (bearing != null && heading != null) {
-            (bearing - heading!! + 360f) % 360f
-        } else 0f
+        val relative = when {
+            bearing != null && heading != null -> (bearing - heading!! + 360f) % 360f
+            heading != null -> heading!!
+            else -> 0f
+        }
 
         Icon(
             Icons.Default.Navigation,
@@ -770,6 +815,7 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
+                    "Загрузка продолжится в фоне при свёрнутом приложении; прогресс виден в уведомлении. " +
                     "После загрузки интернет для этой области не нужен."
             )
 
@@ -778,7 +824,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf(2.0, 5.0, 10.0).forEach { r ->
+                listOf(2.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { r ->
                     FilterChip(
                         selected = radius == r,
                         onClick = { radius = r },
@@ -787,14 +833,38 @@ private fun OfflineScreen(vm: AppViewModel) {
                 }
             }
 
+            if (radius >= 50.0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Большая область: загрузка может занять заметно больше времени и места. " +
+                        "Для 50–100 км приложение автоматически снижает максимальный масштаб, чтобы размер оставался разумным.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             Spacer(Modifier.height(10.dp))
-            Button(
-                enabled = location != null,
-                onClick = { vm.downloadCurrentRegion(radius) }
-            ) {
-                Icon(Icons.Default.Download, null)
-                Spacer(Modifier.width(6.dp))
-                Text("Скачать")
+            if (progress?.active == true) {
+                Button(
+                    onClick = vm::cancelDownload,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Icon(Icons.Default.Stop, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Пауза")
+                }
+            } else {
+                Button(
+                    enabled = location != null,
+                    onClick = { vm.downloadCurrentRegion(radius) }
+                ) {
+                    Icon(Icons.Default.Download, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Скачать")
+                }
             }
 
             progress?.let { p ->
@@ -802,8 +872,14 @@ private fun OfflineScreen(vm: AppViewModel) {
                 p.error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
+                if (p.cancelled) {
+                    Text(
+                        "Загрузка приостановлена. Повторный запуск этой же области продолжит с уже скачанных тайлов.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-                if (p.error == null) {
+                if (p.error == null && !p.cancelled) {
                     val ratio = if (p.requiredResources > 0) {
                         p.completedResources.toFloat() / p.requiredResources
                     } else 0f
@@ -871,12 +947,13 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "MapTiler подключён встроенным ключом. Спутник использует прямой raster-источник MapTiler Satellite, " +
-                "рельеф — Terrain RGB hillshade, а комбинированный режим накладывает hillshade поверх спутникового снимка."
+            "Онлайн-карты возвращены к ранней рабочей схеме: обычная карта — OpenFreeMap Liberty, " +
+                "спутник — оригинальный MapTiler Satellite v4, рельеф — оригинальный MapTiler Outdoor v4. " +
+                "После ручного просмотра карта остаётся там, где вы её оставили; режим слежения включается кнопкой «Я здесь»."
         )
         AssistChip(
             onClick = {},
-            label = { Text("MapTiler подключён") },
+            label = { Text("MapTiler API + офлайн-кэш") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
@@ -900,7 +977,7 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text(
             "Обычный режим GNSS запрашивает обновления не чаще необходимого для пешей " +
                 "навигации. Режим повышенной точности включается только при сохранении " +
-                "точной точки. Компас ограничен примерно 10 обновлениями в секунду."
+                "точной точки. Компас сглаживается по круговой шкале и обновляет направление без мелкой дрожи."
         )
 
         HorizontalDivider()
