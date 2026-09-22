@@ -64,7 +64,7 @@ object LocalMapStyleServer {
         if (!started.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_cache_detail_v3").apply { mkdirs() }
+        onlineCache = File(appContext.filesDir, "map_cache_detail_v4").apply { mkdirs() }
         offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
 
         try {
@@ -110,9 +110,17 @@ object LocalMapStyleServer {
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(SOURCE_MAP)
         MapLayer.SATELLITE -> listOf(SOURCE_SATELLITE)
-        MapLayer.TERRAIN -> listOf(SOURCE_TOPO, SOURCE_HILLSHADE)
+        MapLayer.TERRAIN -> listOf(SOURCE_TOPO)
         MapLayer.SATELLITE_TERRAIN -> listOf(SOURCE_SATELLITE, SOURCE_HILLSHADE)
         MapLayer.CUSTOM -> emptyList()
+    }
+
+    fun maxDownloadZoom(source: String): Int = when (source) {
+        SOURCE_MAP -> 22
+        SOURCE_SATELLITE -> 22
+        SOURCE_TOPO -> 22
+        SOURCE_HILLSHADE -> 13
+        else -> 0
     }
 
     fun tileExtension(source: String): String = when (source) {
@@ -122,7 +130,7 @@ object LocalMapStyleServer {
     }
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "detail_v3/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "detail_v4/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -247,7 +255,7 @@ object LocalMapStyleServer {
                 connection.instanceFollowRedirects = true
                 connection.setRequestProperty(
                     "User-Agent",
-                    "ForestNavigator/0.9.7 Android (offline-capable map client)"
+                    "ForestNavigator/0.9.10 Android (offline-capable map client)"
                 )
                 connection.setRequestProperty("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
                 connection.setRequestProperty("Accept-Encoding", "identity")
@@ -307,75 +315,71 @@ object LocalMapStyleServer {
         )
 
         return when (source) {
-            SOURCE_MAP -> listOf(
-                Provider(
-                    id = "esri-street",
-                    host = "server.arcgisonline.com",
-                    url = { zz, xx, yy ->
-                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/$zz/$yy/$xx"
-                    },
-                    minIntervalMs = 25L
-                ),
-                Provider(
-                    id = "maptiler-map",
-                    host = "api.maptiler.com",
-                    url = { zz, xx, yy ->
-                        "https://api.maptiler.com/maps/streets-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
-                    },
-                    minIntervalMs = 25L
-                ),
-                Provider(
-                    id = "osm",
-                    host = "tile.openstreetmap.org",
-                    url = { zz, xx, yy ->
-                        "https://tile.openstreetmap.org/$zz/$xx/$yy.png"
-                    },
-                    minIntervalMs = 100L
+            SOURCE_MAP -> buildList {
+                add(
+                    Provider(
+                        id = "maptiler-streets",
+                        host = "api.maptiler.com",
+                        url = { zz, xx, yy ->
+                            "https://api.maptiler.com/maps/streets-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
+                        },
+                        minIntervalMs = 20L
+                    )
                 )
-            )
+                if (z <= 19) {
+                    add(
+                        Provider(
+                            id = "osm",
+                            host = "tile.openstreetmap.org",
+                            url = { zz, xx, yy ->
+                                "https://tile.openstreetmap.org/$zz/$xx/$yy.png"
+                            },
+                            minIntervalMs = 100L
+                        )
+                    )
+                }
+            }
 
             SOURCE_SATELLITE -> listOf(
                 Provider(
-                    id = "maptiler-satellite",
+                    id = "maptiler-satellite-v2",
                     host = "api.maptiler.com",
                     url = { zz, xx, yy ->
-                        "https://api.maptiler.com/maps/satellite-v4/256/$zz/$xx/$yy.jpg?key=$encodedKey"
+                        "https://api.maptiler.com/tiles/satellite-v2/$zz/$xx/$yy.jpg?key=$encodedKey"
                     },
                     minIntervalMs = 20L
-                ),
-                Provider(
-                    id = "esri-imagery",
-                    host = "server.arcgisonline.com",
-                    url = { zz, xx, yy ->
-                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/$zz/$yy/$xx"
-                    },
-                    minIntervalMs = 25L
                 )
             )
 
-            SOURCE_TOPO -> listOf(
-                Provider(
-                    id = "opentopo",
-                    host = "tile.opentopomap.org",
-                    url = { zz, xx, yy ->
-                        val sub = when ((xx + yy) % 3) {
-                            0 -> "a"
-                            1 -> "b"
-                            else -> "c"
-                        }
-                        "https://$sub.tile.opentopomap.org/$zz/$xx/$yy.png"
-                    },
-                    minIntervalMs = 90L
-                ),
-                Provider(
-                    id = "maptiler-outdoor",
-                    host = "api.maptiler.com",
-                    url = { zz, xx, yy ->
-                        "https://api.maptiler.com/maps/outdoor-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
-                    },
-                    minIntervalMs = 25L
+            SOURCE_TOPO -> buildList {
+                add(
+                    Provider(
+                        id = "maptiler-outdoor",
+                        host = "api.maptiler.com",
+                        url = { zz, xx, yy ->
+                            "https://api.maptiler.com/maps/outdoor-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
+                        },
+                        minIntervalMs = 20L
+                    )
                 )
-            )
+                if (z <= 17) {
+                    add(
+                        Provider(
+                            id = "opentopo",
+                            host = "tile.opentopomap.org",
+                            url = { zz, xx, yy ->
+                                val sub = when ((xx + yy) % 3) {
+                                    0 -> "a"
+                                    1 -> "b"
+                                    else -> "c"
+                                }
+                                "https://$sub.tile.opentopomap.org/$zz/$xx/$yy.png"
+                            },
+                            minIntervalMs = 100L
+                        )
+                    )
+                }
+            }
 
             SOURCE_HILLSHADE -> listOf(
                 Provider(
@@ -423,61 +427,23 @@ object LocalMapStyleServer {
     private fun mapStyle(): String = rasterStyle(
         name = "Forest Navigator Map",
         source = SOURCE_MAP,
-        maxZoom = 19,
-        attribution = "Tiles © Esri; fallback data © OpenStreetMap contributors"
+        maxZoom = 22,
+        attribution = "© MapTiler © OpenStreetMap contributors"
     )
 
     private fun satelliteStyle(): String = rasterStyle(
         name = "Forest Navigator Satellite",
         source = SOURCE_SATELLITE,
         maxZoom = 22,
-        attribution = "Satellite imagery © MapTiler; fallback © Esri and contributors"
+        attribution = "Satellite imagery © MapTiler © OpenStreetMap contributors"
     )
 
-    private fun terrainStyle(): String = """
-        {
-          "version": 8,
-          "name": "Forest Navigator Relief",
-          "sources": {
-            "$SOURCE_TOPO": {
-              "type": "raster",
-              "tiles": ["${tileTemplate(SOURCE_TOPO)}"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 19,
-              "attribution": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM; fallback © MapTiler"
-            },
-            "$SOURCE_HILLSHADE": {
-              "type": "raster",
-              "tiles": ["${tileTemplate(SOURCE_HILLSHADE)}"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 13,
-              "attribution": "Hillshade © Esri and elevation data contributors"
-            }
-          },
-          "layers": [
-            {
-              "id": "topographic-base",
-              "type": "raster",
-              "source": "$SOURCE_TOPO"
-            },
-            {
-              "id": "hillshade-overlay",
-              "type": "raster",
-              "source": "$SOURCE_HILLSHADE",
-              "paint": {
-                "raster-opacity": 0.42,
-                "raster-contrast": 0.18,
-                "raster-brightness-min": 0.10,
-                "raster-brightness-max": 0.92
-              }
-            }
-          ]
-        }
-    """.trimIndent()
+    private fun terrainStyle(): String = rasterStyle(
+        name = "Forest Navigator Outdoor Relief",
+        source = SOURCE_TOPO,
+        maxZoom = 22,
+        attribution = "Outdoor map © MapTiler © OpenStreetMap contributors"
+    )
 
     private fun combinedStyle(): String = """
         {
@@ -491,7 +457,7 @@ object LocalMapStyleServer {
               "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 22,
-              "attribution": "Satellite imagery © MapTiler; fallback © Esri and contributors"
+              "attribution": "Satellite imagery © MapTiler © OpenStreetMap contributors"
             },
             "$SOURCE_HILLSHADE": {
               "type": "raster",
