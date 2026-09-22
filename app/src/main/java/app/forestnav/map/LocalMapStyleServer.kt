@@ -15,6 +15,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -22,23 +23,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /**
- * Local raster cache/proxy used by MapLibre and by the offline downloader.
+ * Clean map/cache server rebuilt from the final 0.9.3 map stack.
  *
- * Remote requests are allowed to overlap while a shared rate limiter spaces the
- * request starts. This hides network latency without hammering the tile service.
+ * Visual map definitions and providers intentionally match 0.9.3. Only the
+ * transport/cache implementation is new: a fresh cache namespace prevents any
+ * tiles from later experimental versions from being reused, and bounded retries
+ * avoid poisoning the cache with failed/partial responses.
  */
 object LocalMapStyleServer {
     private val started = AtomicBoolean(false)
-    private val rateLock = Any()
 
     @Volatile private var port: Int = 8765
-    @Volatile private var lastRemoteRequestAt: Long = 0L
-    @Volatile private var remoteBlockedUntil: Long = 0L
 
-    private lateinit var appContext: Context
     private lateinit var onlineCache: File
     private lateinit var offlineRoot: File
     private var serverSocket: ServerSocket? = null
+
+    private val providerLocks = ConcurrentHashMap<String, Any>()
+    private val providerNextRequestAt = ConcurrentHashMap<String, Long>()
+    private val providerBlockedUntil = ConcurrentHashMap<String, Long>()
 
     private val clientExecutor = ThreadPoolExecutor(
         8,
@@ -47,15 +50,16 @@ object LocalMapStyleServer {
         TimeUnit.SECONDS,
         ArrayBlockingQueue(192),
         { runnable ->
-            Thread(runnable, "forest-map-http-client").apply { isDaemon = true }
+            Thread(runnable, "forest-map-http-client-clean").apply { isDaemon = true }
         }
     )
 
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
-        appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_tile_cache").apply { mkdirs() }
-        offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
+
+        val appContext = context.applicationContext
+        onlineCache = File(appContext.filesDir, CACHE_DIR).apply { mkdirs() }
+        offlineRoot = File(appContext.filesDir, OFFLINE_ROOT).apply { mkdirs() }
 
         try {
             val loopback = InetAddress.getByName("127.0.0.1")
@@ -82,7 +86,7 @@ object LocalMapStyleServer {
                         runCatching { client.close() }
                     }
                 }
-            }, "forest-map-http-server").apply {
+            }, "forest-map-http-server-clean").apply {
                 isDaemon = true
                 start()
             }
@@ -92,24 +96,32 @@ object LocalMapStyleServer {
         }
     }
 
+    fun offlineRoot(context: Context): File =
+        File(context.filesDir, OFFLINE_ROOT).apply { mkdirs() }
+
     fun mapUrl(): String = baseUrl("style/map.json")
     fun satelliteUrl(): String = baseUrl("style/satellite.json")
     fun terrainUrl(): String = baseUrl("style/terrain.json")
     fun combinedUrl(): String = baseUrl("style/combined.json")
 
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
-        MapLayer.MAP -> listOf("map")
-        MapLayer.SATELLITE -> listOf("satellite")
-        MapLayer.TERRAIN -> listOf("terrain")
-        MapLayer.SATELLITE_TERRAIN -> listOf("satellite", "terrain")
+        MapLayer.MAP -> listOf(SOURCE_MAP)
+        MapLayer.SATELLITE -> listOf(SOURCE_SATELLITE)
+        MapLayer.TERRAIN -> listOf(SOURCE_TERRAIN)
+        MapLayer.SATELLITE_TERRAIN -> listOf(SOURCE_SATELLITE, SOURCE_TERRAIN)
         MapLayer.CUSTOM -> emptyList()
     }
 
+    fun maxDownloadZoom(source: String): Int = when (source) {
+        SOURCE_MAP, SOURCE_SATELLITE, SOURCE_TERRAIN -> 20
+        else -> 0
+    }
+
     fun tileExtension(source: String): String =
-        if (source == "satellite") "jpg" else "png"
+        if (source == SOURCE_SATELLITE) "jpg" else "png"
 
     fun tileFile(regionDir: File, source: String, z: Int, x: Int, y: Int): File =
-        File(regionDir, "v2/$source/$z/$x/$y.${tileExtension(source)}")
+        File(regionDir, "tiles/$source/$z/$x/$y.${tileExtension(source)}")
 
     fun downloadTileTo(
         source: String,
@@ -118,11 +130,13 @@ object LocalMapStyleServer {
         y: Int,
         destination: File
     ): Long {
-        if (destination.isFile && destination.length() > 0L) return destination.length()
+        if (isValidCachedTile(destination, source)) return destination.length()
 
         findCachedTile(source, z, x, y)?.let { cached ->
             destination.parentFile?.mkdirs()
-            cached.copyTo(destination, overwrite = true)
+            if (cached.absolutePath != destination.absolutePath) {
+                cached.copyTo(destination, overwrite = true)
+            }
             return destination.length()
         }
 
@@ -145,9 +159,7 @@ object LocalMapStyleServer {
             ?.trimStart('/')
             .orEmpty()
 
-        while (reader.readLine()?.isNotEmpty() == true) {
-            // Drain request headers before writing the response.
-        }
+        while (reader.readLine()?.isNotEmpty() == true) Unit
 
         when {
             path == "style/map.json" -> sendJson(client, mapStyle())
@@ -173,7 +185,7 @@ object LocalMapStyleServer {
         val y = yPart.substringBeforeLast('.').toIntOrNull()
         val ext = yPart.substringAfterLast('.', missingDelimiterValue = "")
 
-        if (source !in setOf("map", "satellite", "terrain") ||
+        if (source !in VALID_SOURCES ||
             z == null || x == null || y == null ||
             ext != tileExtension(source)
         ) {
@@ -191,123 +203,178 @@ object LocalMapStyleServer {
             writeAtomically(onlineTile(source, z, x, y), bytes)
             sendBinary(client, bytes, contentType(source))
         }.onFailure { error ->
-            val msg = error.message.orEmpty()
-            val code = when {
-                msg.contains("429") -> 503
-                msg.contains("404") -> 404
+            val message = error.message.orEmpty()
+            val status = when {
+                message.contains("HTTP 404") -> 404
+                message.contains("HTTP 429") -> 503
                 else -> 502
             }
-            sendStatus(client, code, msg.ifBlank { "Tile fetch failed" })
+            sendStatus(client, status, message.ifBlank { "Tile fetch failed" })
         }
     }
 
     private fun findCachedTile(source: String, z: Int, x: Int, y: Int): File? {
         val online = onlineTile(source, z, x, y)
-        if (online.isFile && online.length() > 0L) return online
+        if (isValidCachedTile(online, source)) return online
 
         offlineRoot.listFiles()
             ?.asSequence()
             ?.filter { it.isDirectory }
-            ?.sortedBy { if (it.name.startsWith(".partial-")) 1 else 0 }
             ?.forEach { region ->
                 val file = tileFile(region, source, z, x, y)
-                if (file.isFile && file.length() > 0L) return file
+                if (isValidCachedTile(file, source)) return file
             }
 
         return null
     }
 
     private fun onlineTile(source: String, z: Int, x: Int, y: Int): File =
-        File(onlineCache, "v2/$source/$z/$x/$y.${tileExtension(source)}")
+        File(onlineCache, "$source/$z/$x/$y.${tileExtension(source)}")
+
+    private fun isValidCachedTile(file: File, source: String): Boolean {
+        if (!file.isFile || file.length() < MIN_TILE_BYTES) return false
+        return runCatching {
+            file.inputStream().use { input ->
+                val header = ByteArray(12)
+                val count = input.read(header)
+                count >= 3 && looksLikeImage(header, count, source)
+            }
+        }.getOrDefault(false)
+    }
 
     private fun fetchRemoteTile(source: String, z: Int, x: Int, y: Int): ByteArray {
+        val providerId = source
         var lastError = "Не удалось получить тайл"
 
         for (attempt in 0 until MAX_REMOTE_ATTEMPTS) {
-            if (Thread.currentThread().isInterrupted) throw InterruptedException("Загрузка отменена")
+            if (Thread.currentThread().isInterrupted) {
+                throw InterruptedException("Загрузка отменена")
+            }
 
-            awaitRemoteRequestSlot()
+            awaitProviderSlot(providerId)
 
             val connection = URL(remoteUrl(source, z, x, y)).openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "ForestNavigator/0.9 Android")
+            connection.setRequestProperty("User-Agent", "ForestNavigator/0.10 Android")
             connection.setRequestProperty("Accept", "image/*")
+            connection.setRequestProperty("Accept-Encoding", "identity")
 
             try {
                 val status = connection.responseCode
                 if (status in 200..299) {
                     val data = connection.inputStream.use { it.readBytes() }
-                    if (data.isEmpty()) throw IOException("Пустой ответ сервера")
+                    if (data.size < MIN_TILE_BYTES || !looksLikeImage(data, data.size, source)) {
+                        throw IOException("Сервер вернул повреждённый тайл")
+                    }
+                    providerBlockedUntil.remove(providerId)
                     return data
                 }
 
-                if (status == 404) throw IllegalStateException("HTTP 404")
+                if (status == 404) {
+                    throw IllegalStateException("HTTP 404")
+                }
 
-                if (status == 429) {
-                    val retryAfterSeconds = connection.getHeaderField("Retry-After")?.toLongOrNull()
-                    val delayMs = max(
-                        (retryAfterSeconds ?: 0L) * 1000L,
-                        (1L shl attempt.coerceAtMost(4)) * 1_200L
-                    ).coerceAtMost(20_000L)
-                    lastError = "HTTP 429"
-                    pauseRemoteRequests(delayMs)
-                } else {
-                    lastError = "HTTP $status"
-                    Thread.sleep(((attempt + 1) * 600L).coerceAtMost(3_000L))
+                lastError = "HTTP $status"
+
+                if (status == 429 || status in 500..599) {
+                    val retryAfterMs = connection.getHeaderField("Retry-After")
+                        ?.toLongOrNull()
+                        ?.times(1000L)
+                    val backoff = retryAfterMs ?: retryBackoffMs(attempt)
+                    blockProvider(providerId, backoff)
+                } else if (attempt + 1 < MAX_REMOTE_ATTEMPTS) {
+                    sleepInterruptibly(retryBackoffMs(attempt).coerceAtMost(4_000L))
                 }
             } catch (e: InterruptedException) {
                 throw e
             } catch (e: SocketTimeoutException) {
-                lastError = "Timeout: ${e.message ?: "сервер карты не ответил"}"
+                lastError = "Timeout"
                 if (attempt + 1 < MAX_REMOTE_ATTEMPTS) {
-                    Thread.sleep(((attempt + 1) * 800L).coerceAtMost(4_000L))
+                    sleepInterruptibly(retryBackoffMs(attempt))
                 }
             } catch (e: IOException) {
                 lastError = e.message ?: "Ошибка сети"
                 if (attempt + 1 < MAX_REMOTE_ATTEMPTS) {
-                    Thread.sleep(((attempt + 1) * 700L).coerceAtMost(3_500L))
+                    sleepInterruptibly(retryBackoffMs(attempt))
                 }
             } finally {
+                runCatching { connection.errorStream?.close() }
                 connection.disconnect()
             }
         }
 
-        throw IllegalStateException(
-            if (lastError == "HTTP 429") {
-                "HTTP 429: сервис карты временно ограничил частоту запросов"
-            } else {
-                lastError
-            }
-        )
+        throw IllegalStateException(lastError)
     }
 
-    private fun awaitRemoteRequestSlot() {
-        synchronized(rateLock) {
+    private fun awaitProviderSlot(providerId: String) {
+        val lock = providerLocks.getOrPut(providerId) { Any() }
+        synchronized(lock) {
             while (true) {
-                if (Thread.currentThread().isInterrupted) throw InterruptedException("Загрузка отменена")
+                if (Thread.currentThread().isInterrupted) {
+                    throw InterruptedException("Загрузка отменена")
+                }
+
                 val now = System.currentTimeMillis()
-                val earliest = max(lastRemoteRequestAt + MIN_REMOTE_REQUEST_INTERVAL_MS, remoteBlockedUntil)
+                val nextRequest = providerNextRequestAt[providerId] ?: 0L
+                val blockedUntil = providerBlockedUntil[providerId] ?: 0L
+                val earliest = max(nextRequest, blockedUntil)
                 val waitMs = earliest - now
+
                 if (waitMs <= 0L) {
-                    lastRemoteRequestAt = now
+                    providerNextRequestAt[providerId] = now + MIN_REQUEST_INTERVAL_MS
                     return
                 }
-                Thread.sleep(waitMs.coerceAtMost(20_000L))
+
+                sleepInterruptibly(waitMs.coerceAtMost(1_000L))
             }
         }
     }
 
-    private fun pauseRemoteRequests(delayMs: Long) {
-        synchronized(rateLock) {
-            remoteBlockedUntil = max(remoteBlockedUntil, System.currentTimeMillis() + delayMs)
+    private fun blockProvider(providerId: String, delayMs: Long) {
+        val until = System.currentTimeMillis() + delayMs.coerceAtMost(MAX_PROVIDER_BACKOFF_MS)
+        providerBlockedUntil.compute(providerId) { _, old ->
+            max(old ?: 0L, until)
         }
+    }
+
+    private fun retryBackoffMs(attempt: Int): Long =
+        (1_000L shl attempt.coerceAtMost(4)).coerceAtMost(MAX_PROVIDER_BACKOFF_MS)
+
+    private fun sleepInterruptibly(durationMs: Long) {
+        var remaining = durationMs
+        while (remaining > 0L) {
+            if (Thread.currentThread().isInterrupted) {
+                throw InterruptedException("Загрузка отменена")
+            }
+            val slice = minOf(remaining, 500L)
+            Thread.sleep(slice)
+            remaining -= slice
+        }
+    }
+
+    private fun looksLikeImage(bytes: ByteArray, count: Int, source: String): Boolean {
+        if (source == SOURCE_SATELLITE) {
+            return count >= 3 &&
+                (bytes[0].toInt() and 0xFF) == 0xFF &&
+                (bytes[1].toInt() and 0xFF) == 0xD8 &&
+                (bytes[2].toInt() and 0xFF) == 0xFF
+        }
+
+        return count >= 8 &&
+            (bytes[0].toInt() and 0xFF) == 0x89 &&
+            bytes[1].toInt() == 0x50 &&
+            bytes[2].toInt() == 0x4E &&
+            bytes[3].toInt() == 0x47
     }
 
     private fun writeAtomically(destination: File, bytes: ByteArray) {
         destination.parentFile?.mkdirs()
-        val temp = File(destination.parentFile, ".${destination.name}.${Thread.currentThread().id}.tmp")
+        val temp = File(
+            destination.parentFile,
+            ".${destination.name}.${Thread.currentThread().id}.tmp"
+        )
         temp.writeBytes(bytes)
         if (!temp.renameTo(destination)) {
             temp.copyTo(destination, overwrite = true)
@@ -316,38 +383,50 @@ object LocalMapStyleServer {
     }
 
     private fun remoteUrl(source: String, z: Int, x: Int, y: Int): String {
-        val key = URLEncoder.encode(BuildConfig.MAPTILER_KEY, StandardCharsets.UTF_8.toString())
+        val key = URLEncoder.encode(
+            BuildConfig.MAPTILER_KEY,
+            StandardCharsets.UTF_8.toString()
+        )
         return when (source) {
-            "map" -> "https://api.maptiler.com/maps/streets-v4/$z/$x/$y.png?key=$key"
-            "satellite" -> "https://api.maptiler.com/maps/satellite-v4/$z/$x/$y.jpg?key=$key"
-            "terrain" -> "https://api.maptiler.com/maps/outdoor-v4/$z/$x/$y.png?key=$key"
+            SOURCE_MAP ->
+                "https://api.maptiler.com/maps/streets-v4/$z/$x/$y.png?key=$key"
+            SOURCE_SATELLITE ->
+                "https://api.maptiler.com/maps/satellite-v4/$z/$x/$y.jpg?key=$key"
+            SOURCE_TERRAIN ->
+                "https://api.maptiler.com/maps/outdoor-v4/$z/$x/$y.png?key=$key"
             else -> error("Unknown map source: $source")
         }
     }
 
+    // These style definitions are intentionally unchanged from 0.9.3.
     private fun tileTemplate(source: String): String =
         "http://127.0.0.1:$port/tile/$source/{z}/{x}/{y}.${tileExtension(source)}"
 
-    private fun mapStyle(): String = rasterStyle("Forest Navigator Map", "map", 20)
-    private fun satelliteStyle(): String = rasterStyle("Forest Navigator Satellite", "satellite", 20)
-    private fun terrainStyle(): String = rasterStyle("Forest Navigator Relief", "terrain", 20)
+    private fun mapStyle(): String =
+        rasterStyle("Forest Navigator Map", SOURCE_MAP, 20)
+
+    private fun satelliteStyle(): String =
+        rasterStyle("Forest Navigator Satellite", SOURCE_SATELLITE, 20)
+
+    private fun terrainStyle(): String =
+        rasterStyle("Forest Navigator Relief", SOURCE_TERRAIN, 20)
 
     private fun combinedStyle(): String = """
         {
           "version": 8,
           "name": "Forest Navigator Satellite + Relief",
           "sources": {
-            "satellite": {
+            "$SOURCE_SATELLITE": {
               "type": "raster",
-              "tiles": ["${tileTemplate("satellite")}"],
+              "tiles": ["${tileTemplate(SOURCE_SATELLITE)}"],
               "scheme": "xyz",
               "tileSize": 512,
               "minzoom": 0,
               "maxzoom": 20
             },
-            "terrain": {
+            "$SOURCE_TERRAIN": {
               "type": "raster",
-              "tiles": ["${tileTemplate("terrain")}"],
+              "tiles": ["${tileTemplate(SOURCE_TERRAIN)}"],
               "scheme": "xyz",
               "tileSize": 512,
               "minzoom": 0,
@@ -356,14 +435,14 @@ object LocalMapStyleServer {
           },
           "layers": [
             {
-              "id": "satellite",
+              "id": "$SOURCE_SATELLITE",
               "type": "raster",
-              "source": "satellite"
+              "source": "$SOURCE_SATELLITE"
             },
             {
               "id": "relief-overlay",
               "type": "raster",
-              "source": "terrain",
+              "source": "$SOURCE_TERRAIN",
               "paint": {
                 "raster-opacity": 0.34,
                 "raster-contrast": 0.12
@@ -398,7 +477,7 @@ object LocalMapStyleServer {
     """.trimIndent()
 
     private fun contentType(source: String): String =
-        if (source == "satellite") "image/jpeg" else "image/png"
+        if (source == SOURCE_SATELLITE) "image/jpeg" else "image/png"
 
     private fun sendJson(client: Socket, body: String) =
         sendBinary(client, body.toByteArray(Charsets.UTF_8), "application/json; charset=utf-8")
@@ -437,8 +516,18 @@ object LocalMapStyleServer {
         output.flush()
     }
 
-    private const val MIN_REMOTE_REQUEST_INTERVAL_MS = 40L
-    private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 40_000
-    private const val MAX_REMOTE_ATTEMPTS = 6
+    private const val CACHE_DIR = "map_tile_cache_clean_0100"
+    private const val OFFLINE_ROOT = "offline_regions_clean_0100"
+
+    private const val SOURCE_MAP = "map"
+    private const val SOURCE_SATELLITE = "satellite"
+    private const val SOURCE_TERRAIN = "terrain"
+    private val VALID_SOURCES = setOf(SOURCE_MAP, SOURCE_SATELLITE, SOURCE_TERRAIN)
+
+    private const val MIN_REQUEST_INTERVAL_MS = 75L
+    private const val CONNECT_TIMEOUT_MS = 12_000
+    private const val READ_TIMEOUT_MS = 25_000
+    private const val MAX_REMOTE_ATTEMPTS = 5
+    private const val MAX_PROVIDER_BACKOFF_MS = 30_000L
+    private const val MIN_TILE_BYTES = 128
 }
