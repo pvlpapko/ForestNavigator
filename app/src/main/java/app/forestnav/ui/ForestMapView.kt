@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.hardware.GeomagneticField
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -55,6 +56,7 @@ private class NativeMapState {
 fun ForestMapView(
     modifier: Modifier,
     location: Location,
+    heading: Float?,
     waypoints: List<Waypoint>,
     styleUrl: String?,
     recenterToken: Int = 0,
@@ -142,7 +144,7 @@ fun ForestMapView(
                         .build()
 
                     state.lastRecenterToken = recenterToken
-                    applyStyle(context, map, state, styleUrl, location, waypoints)
+                    applyStyle(context, map, state, styleUrl, location, heading, waypoints)
                     mapView.post {
                         publishScale(map, mapView, state, currentScaleCallback.value, force = true)
                     }
@@ -153,11 +155,11 @@ fun ForestMapView(
             val map = state.map ?: return@AndroidView
 
             if (styleUrl != null && styleUrl != state.loadedStyle && styleUrl != state.loadingStyle) {
-                applyStyle(context, map, state, styleUrl, location, waypoints)
+                applyStyle(context, map, state, styleUrl, location, heading, waypoints)
                 return@AndroidView
             }
 
-            updateLocationPuck(map, location)
+            updateLocationPuck(map, location, heading)
             updateWaypointAnnotations(context, map, state, waypoints)
 
             if (state.lastRecenterToken != recenterToken) {
@@ -202,6 +204,7 @@ private fun applyStyle(
     state: NativeMapState,
     styleUrl: String?,
     location: Location,
+    heading: Float?,
     waypoints: List<Waypoint>
 ) {
     val url = styleUrl ?: return
@@ -215,7 +218,7 @@ private fun applyStyle(
         state.waypointByMarkerId.clear()
         state.waypointFingerprint = 0
 
-        setupLocationPuck(context, map, style, location)
+        setupLocationPuck(context, map, style, location, heading)
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
@@ -240,7 +243,8 @@ private fun setupLocationPuck(
     context: Context,
     map: MapLibreMap,
     style: Style,
-    location: Location
+    location: Location,
+    heading: Float?
 ) {
     val component = map.locationComponent
 
@@ -255,16 +259,32 @@ private fun setupLocationPuck(
 
     component.isLocationComponentEnabled = true
     component.cameraMode = CameraMode.NONE
-    component.renderMode = RenderMode.NORMAL
-    component.setMaxAnimationFps(15)
-    component.forceLocationUpdate(location)
+    component.renderMode = if (heading != null) RenderMode.GPS else RenderMode.NORMAL
+    component.setMaxAnimationFps(20)
+    component.forceLocationUpdate(locationWithHeading(location, heading))
 }
 
 @SuppressLint("MissingPermission")
-private fun updateLocationPuck(map: MapLibreMap, location: Location) {
+private fun updateLocationPuck(map: MapLibreMap, location: Location, heading: Float?) {
     val component = map.locationComponent
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
-        component.forceLocationUpdate(location)
+        component.renderMode = if (heading != null) RenderMode.GPS else RenderMode.NORMAL
+        component.forceLocationUpdate(locationWithHeading(location, heading))
+    }
+}
+
+private fun locationWithHeading(location: Location, heading: Float?): Location {
+    if (heading == null) return location
+    val altitude = if (location.hasAltitude()) location.altitude else 0.0
+    val declination = GeomagneticField(
+        location.latitude.toFloat(),
+        location.longitude.toFloat(),
+        altitude.toFloat(),
+        System.currentTimeMillis()
+    ).declination
+    val trueHeading = (heading + declination + 360f) % 360f
+    return Location(location).apply {
+        bearing = trueHeading
     }
 }
 
