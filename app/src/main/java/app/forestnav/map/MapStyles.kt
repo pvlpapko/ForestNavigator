@@ -25,6 +25,7 @@ enum class MapLayer(val title: String) {
  */
 object MapStyles {
     const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
+    private const val JSON_PREFIX = "json:"
 
     fun url(
         layer: MapLayer,
@@ -67,6 +68,10 @@ object MapStyles {
             MapLayer.CUSTOM -> null
         }
     }
+
+    fun isJsonStyle(value: String): Boolean = value.startsWith(JSON_PREFIX)
+
+    fun jsonPayload(value: String): String = value.removePrefix(JSON_PREFIX)
 
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
         layer == MapLayer.MAP || settings.mapTilerKey.isNotBlank()
