@@ -38,5 +38,10 @@
             android:name=".service.TrackRecordingService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <service
+            android:name=".service.OfflineMapDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
