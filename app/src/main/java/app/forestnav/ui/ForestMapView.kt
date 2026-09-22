@@ -50,7 +50,6 @@ private class NativeMapState {
     var initialCameraAnimationDone = false
     var lastRecenterToken: Int = -1
     var lastScaleMeters: Double = 0.0
-    var lastMapBearing: Double? = null
 }
 
 @Composable
@@ -161,11 +160,10 @@ fun ForestMapView(
             }
 
             updateLocationPuck(map, location, heading)
-            updateMapBearing(map, state, heading)
             updateWaypointAnnotations(context, map, state, waypoints)
 
             if (state.lastRecenterToken != recenterToken) {
-                val target = CameraPosition.Builder()
+                val target = CameraPosition.Builder(map.cameraPosition)
                     .target(LatLng(location.latitude, location.longitude))
                     .zoom(maxOf(map.cameraPosition.zoom, 15.5))
                     .build()
@@ -221,11 +219,10 @@ private fun applyStyle(
         state.waypointFingerprint = 0
 
         setupLocationPuck(context, map, style, location, heading)
-        updateMapBearing(map, state, heading, force = true)
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
-            val target = CameraPosition.Builder()
+            val target = CameraPosition.Builder(map.cameraPosition)
                 .target(LatLng(location.latitude, location.longitude))
                 .zoom(16.0)
                 .build()
@@ -238,26 +235,6 @@ private fun applyStyle(
         map.setStyle(Style.Builder().fromJson(MapStyles.jsonPayload(url)), onLoaded)
     } else {
         map.setStyle(url, onLoaded)
-    }
-}
-
-private fun updateMapBearing(
-    map: MapLibreMap,
-    state: NativeMapState,
-    heading: Float?,
-    force: Boolean = false
-) {
-    val target = heading?.toDouble() ?: return
-    val previous = state.lastMapBearing
-    val delta = if (previous == null) {
-        180.0
-    } else {
-        kotlin.math.abs(((target - previous + 540.0) % 360.0) - 180.0)
-    }
-
-    if (force || delta >= 1.5) {
-        map.easeCamera(CameraUpdateFactory.bearingTo(target), 140)
-        state.lastMapBearing = target
     }
 }
 
@@ -286,8 +263,12 @@ private fun setupLocationPuck(
     }
 
     component.isLocationComponentEnabled = true
-    component.cameraMode = CameraMode.NONE
     component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
+    component.cameraMode = if (heading != null) {
+        CameraMode.TRACKING_COMPASS
+    } else {
+        CameraMode.TRACKING
+    }
     component.setMaxAnimationFps(20)
     component.forceLocationUpdate(location)
 }
@@ -297,6 +278,11 @@ private fun updateLocationPuck(map: MapLibreMap, location: Location, heading: Fl
     val component = map.locationComponent
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
         component.renderMode = if (heading != null) RenderMode.COMPASS else RenderMode.NORMAL
+        component.cameraMode = if (heading != null) {
+            CameraMode.TRACKING_COMPASS
+        } else {
+            CameraMode.TRACKING
+        }
         component.forceLocationUpdate(location)
     }
 }
