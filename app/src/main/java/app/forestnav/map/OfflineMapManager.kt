@@ -353,7 +353,7 @@ class OfflineMapManager(private val context: Context) {
     }
 
     companion object {
-        private const val WORKER_COUNT = 4
+        private const val WORKER_COUNT = 6
         private const val MAX_DOWNLOAD_ROUNDS = 3
         private const val MAX_RESOURCES = 60_000L
     }
