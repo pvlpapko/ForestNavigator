@@ -131,6 +131,37 @@ class OfflineMapManager(private val context: Context) {
 
                 publish(force = true)
 
+                // Verify the provider before queueing hundreds/thousands of requests.
+                // This also gives immediate visible progress (1/N) instead of sitting at 0/N.
+                if (pending.isNotEmpty()) {
+                    checkNotCancelled()
+                    val probe = pending.removeAt(0)
+                    val probeFile = LocalMapStyleServer.tileFile(
+                        partial,
+                        probe.source,
+                        probe.tile.z,
+                        probe.tile.x,
+                        probe.tile.y
+                    )
+                    try {
+                        val stored = LocalMapStyleServer.downloadTileTo(
+                            source = probe.source,
+                            z = probe.tile.z,
+                            x = probe.tile.x,
+                            y = probe.tile.y,
+                            destination = probeFile
+                        )
+                        completed.incrementAndGet()
+                        bytes.addAndGet(stored)
+                        publish(force = true)
+                    } catch (t: Throwable) {
+                        if (t is InterruptedException) throw t
+                        throw IllegalStateException(
+                            "Сервер карт недоступен: ${t.message ?: "не удалось получить первый тайл"}"
+                        )
+                    }
+                }
+
                 var remaining: List<DownloadTask> = pending
                 repeat(MAX_DOWNLOAD_ROUNDS) { round ->
                     if (remaining.isEmpty()) return@repeat
