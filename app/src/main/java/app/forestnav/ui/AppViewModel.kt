@@ -30,16 +30,16 @@ import kotlinx.coroutines.withContext
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as ForestNavApplication
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val _online = MutableStateFlow(isValidatedOnline())
+    private val _online = MutableStateFlow(hasInternetTransport())
     val online = _online.asStateFlow()
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            _online.value = isValidatedOnline()
+            _online.value = hasInternetTransport()
         }
 
         override fun onLost(network: Network) {
-            _online.value = isValidatedOnline()
+            _online.value = hasInternetTransport()
         }
 
         override fun onCapabilitiesChanged(
@@ -48,8 +48,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             _online.value = networkCapabilities.hasCapability(
                 NetworkCapabilities.NET_CAPABILITY_INTERNET
-            ) && networkCapabilities.hasCapability(
-                NetworkCapabilities.NET_CAPABILITY_VALIDATED
             )
         }
     }
@@ -90,7 +88,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
-        _online.value = isValidatedOnline()
+        _online.value = hasInternetTransport()
         refreshWaypoints()
         refreshOfflineRegions()
         viewModelScope.launch {
@@ -258,11 +256,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshWaypointsInternal() { _waypoints.value = app.database.listWaypoints() }
 
-    private fun isValidatedOnline(): Boolean {
+    private fun hasInternetTransport(): Boolean {
         val network = connectivity.activeNetwork ?: return false
         val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     override fun onCleared() {
