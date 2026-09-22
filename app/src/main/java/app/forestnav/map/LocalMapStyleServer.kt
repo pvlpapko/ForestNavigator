@@ -368,10 +368,10 @@ object LocalMapStyleServer {
                     minIntervalMs = 90L
                 ),
                 Provider(
-                    id = "esri-topo",
-                    host = "server.arcgisonline.com",
+                    id = "maptiler-outdoor",
+                    host = "api.maptiler.com",
                     url = { zz, xx, yy ->
-                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/$zz/$yy/$xx"
+                        "https://api.maptiler.com/maps/outdoor-v4/256/$zz/$xx/$yy.png?key=$encodedKey"
                     },
                     minIntervalMs = 25L
                 )
@@ -446,7 +446,7 @@ object LocalMapStyleServer {
               "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 19,
-              "attribution": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM; fallback © Esri"
+              "attribution": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM; fallback © MapTiler"
             },
             "$SOURCE_HILLSHADE": {
               "type": "raster",
