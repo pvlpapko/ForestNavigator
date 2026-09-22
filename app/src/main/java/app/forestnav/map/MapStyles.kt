@@ -11,6 +11,7 @@ enum class MapLayer(val title: String) {
 }
 
 object MapStyles {
+    const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
     private const val JSON_PREFIX = "json:"
 
     fun url(layer: MapLayer, settings: SettingsStore): String? = when (layer) {
