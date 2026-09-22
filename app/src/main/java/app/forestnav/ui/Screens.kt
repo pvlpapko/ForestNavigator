@@ -151,6 +151,7 @@ fun MapScreen(vm: AppViewModel) {
                     ForestMapView(
                         modifier = Modifier.fillMaxSize(),
                         location = location!!,
+                        heading = heading,
                         waypoints = waypoints,
                         styleUrl = vm.styleUrl(),
                         recenterToken = recenterToken,
