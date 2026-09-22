@@ -83,9 +83,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "MapTiler Satellite v2 • 512 px HD-снимки"
-                                MapLayer.TERRAIN -> "OpenTopoMap + Terrain RGB • топография и объёмный hillshade"
-                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite v2 + Terrain RGB hillshade"
+                                MapLayer.SATELLITE -> "MapTiler Satellite v4 • исходный HD-стиль"
+                                MapLayer.TERRAIN -> "MapTiler Outdoor v4 • исходный рельеф с лесами, водой, дорогами и высотами"
+                                MapLayer.SATELLITE_TERRAIN -> "MapTiler Satellite + Terrain RGB hillshade"
                                 else -> ""
                             }
                         } else {
@@ -947,9 +947,9 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Картографический стек собран заново на ранней схеме без промежуточного прокси для онлайн-режима: " +
-                "обычная карта — OpenFreeMap Liberty, спутник — MapTiler Satellite v2, рельеф — OpenTopoMap + Terrain RGB hillshade. " +
-                "Офлайн-загрузка изолирована от онлайн-рендера; после ручного просмотра слежение включается только кнопкой «Я здесь»."
+            "Онлайн-карты возвращены к ранней рабочей схеме: обычная карта — OpenFreeMap Liberty, " +
+                "спутник — оригинальный MapTiler Satellite v4, рельеф — оригинальный MapTiler Outdoor v4. " +
+                "После ручного просмотра карта остаётся там, где вы её оставили; режим слежения включается кнопкой «Я здесь»."
         )
         AssistChip(
             onClick = {},
