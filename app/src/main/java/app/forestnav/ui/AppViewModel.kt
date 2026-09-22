@@ -181,19 +181,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
         val maxZoom = when {
-            radiusKm <= 2.0 -> 18.0
-            radiusKm <= 5.0 -> 17.0
-            radiusKm <= 10.0 -> 16.0
-            radiusKm <= 25.0 -> 15.0
-            radiusKm <= 50.0 -> 14.0
-            radiusKm <= 100.0 -> 13.0
-            else -> 12.0
+            radiusKm <= 2.0 -> 17.0
+            radiusKm <= 5.0 -> 16.0
+            radiusKm <= 10.0 -> 15.0
+            radiusKm <= 25.0 -> 14.0
+            radiusKm <= 50.0 -> 13.0
+            radiusKm <= 100.0 -> 12.0
+            else -> 11.0
         }
         val minZoom = when {
-            radiusKm >= 100.0 -> 7.0
-            radiusKm >= 50.0 -> 8.0
-            radiusKm >= 25.0 -> 9.0
-            else -> 10.0
+            radiusKm >= 100.0 -> 6.0
+            radiusKm >= 50.0 -> 7.0
+            radiusKm >= 25.0 -> 8.0
+            else -> 9.0
         }
 
         OfflineMapDownloadService.start(
