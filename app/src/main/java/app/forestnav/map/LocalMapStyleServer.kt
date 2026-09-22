@@ -413,7 +413,7 @@ object LocalMapStyleServer {
         name = "Forest Navigator Map",
         source = SOURCE_MAP,
         maxZoom = 19,
-        attribution = "© OpenStreetMap contributors"
+        attribution = "Tiles © Esri; fallback data © OpenStreetMap contributors"
     )
 
     private fun satelliteStyle(): String = rasterStyle(
@@ -427,7 +427,7 @@ object LocalMapStyleServer {
         name = "Forest Navigator Relief",
         source = SOURCE_TERRAIN,
         maxZoom = 17,
-        attribution = "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM"
+        attribution = "Tiles © Esri / OpenTopoMap; © OpenStreetMap contributors, SRTM"
     )
 
     private fun combinedStyle(): String = """
@@ -451,7 +451,7 @@ object LocalMapStyleServer {
               "tileSize": 256,
               "minzoom": 0,
               "maxzoom": 17,
-              "attribution": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap contributors, SRTM"
+              "attribution": "Tiles © Esri / OpenTopoMap; © OpenStreetMap contributors, SRTM"
             }
           },
           "layers": [
