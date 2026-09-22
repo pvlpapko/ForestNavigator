@@ -944,12 +944,12 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "MapTiler подключён встроенным ключом. Спутник использует прямой raster-источник MapTiler Satellite, " +
-                "рельеф — Terrain RGB hillshade, а комбинированный режим накладывает hillshade поверх спутникового снимка."
+            "Встроенные режимы используют новый raster-стек: карта, спутник и рельеф имеют основной сервер " +
+                "и резервный источник. Тайлы сохраняются в локальный кэш и используются повторно."
         )
         AssistChip(
             onClick = {},
-            label = { Text("MapTiler подключён") },
+            label = { Text("Кэш и резервные источники включены") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
