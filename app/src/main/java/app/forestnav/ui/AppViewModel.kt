@@ -13,6 +13,8 @@ import app.forestnav.gnss.PreciseFixCollector
 import app.forestnav.map.MapLayer
 import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineMapManager
+import app.forestnav.service.OfflineMapDownloadService
+import app.forestnav.service.OfflineMapDownloadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,13 +55,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var preciseJob: Job? = null
     private var foregroundActive = false
 
-    private val _download = MutableStateFlow<OfflineMapManager.DownloadProgress?>(null)
-    val download = _download.asStateFlow()
+    val download = OfflineMapDownloadState.progress
 
     private val _offlineRegions = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     val offlineRegions = _offlineRegions.asStateFlow()
 
-    init { refreshWaypoints(); refreshOfflineRegions() }
+    init {
+        refreshWaypoints()
+        refreshOfflineRegions()
+        viewModelScope.launch {
+            download.collectLatest { progress ->
+                if (progress?.complete == true) refreshOfflineRegions()
+            }
+        }
+    }
 
     fun startForegroundSensors() {
         foregroundActive = true
@@ -168,13 +177,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun customStyle(): String = app.settings.customStyleUrl
 
     fun downloadCurrentRegion(radiusKm: Double) {
-        val loc: Location = location.value ?: run {
-            _download.value = OfflineMapManager.DownloadProgress(error = "Нет GPS-координат")
-            return
-        }
+        val loc: Location = location.value ?: return
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-        _download.value = OfflineMapManager.DownloadProgress()
         val maxZoom = when {
             radiusKm <= 2.0 -> 18.0
             radiusKm <= 5.0 -> 17.0
@@ -190,7 +195,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             radiusKm >= 25.0 -> 9.0
             else -> 10.0
         }
-        offline.downloadAround(
+
+        OfflineMapDownloadService.start(
+            context = app,
             name = name,
             layer = layer,
             latitude = loc.latitude,
@@ -198,14 +205,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             radiusKm = radiusKm,
             minZoom = minZoom,
             maxZoom = maxZoom
-        ) {
-            _download.value = it
-            if (it.complete) refreshOfflineRegions()
-        }
+        )
     }
 
     fun cancelDownload() {
-        offline.cancelDownload()
+        OfflineMapDownloadService.cancel(app)
     }
 
     fun refreshOfflineRegions() {
