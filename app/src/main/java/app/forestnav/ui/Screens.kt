@@ -83,8 +83,8 @@ fun MapScreen(vm: AppViewModel) {
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
                                 MapLayer.SATELLITE -> "HD спутник: MapTiler • близкое приближение до z22"
-                                MapLayer.TERRAIN -> "Рельеф: топографическая карта + hillshade"
-                                MapLayer.SATELLITE_TERRAIN -> "HD спутник + hillshade рельеф"
+                                MapLayer.TERRAIN -> "Рельеф: улицы, тропы, горизонтали и высоты + hillshade"
+                                MapLayer.SATELLITE_TERRAIN -> "HD спутник + теневой рельеф"
                                 else -> ""
                             }
                         } else {
@@ -944,8 +944,8 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Встроенные режимы используют новый raster-стек: карта, спутник и рельеф имеют основной сервер " +
-                "и резервный источник. Тайлы сохраняются в локальный кэш и используются повторно."
+            "Режим «Рельеф» использует подробную OpenTopoMap-подложку с улицами, дорогами, тропами, горизонталями " +
+                "и отметками высот. Карта автоматически поворачивается по направлению телефона. Тайлы кэшируются локально."
         )
         AssistChip(
             onClick = {},
