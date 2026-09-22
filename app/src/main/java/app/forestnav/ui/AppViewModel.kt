@@ -204,8 +204,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateMapTilerKey(value: String) { app.settings.mapTilerKey = value }
-    fun mapTilerKey(): String = app.settings.mapTilerKey
     fun updateCustomStyle(value: String) { app.settings.customStyleUrl = value }
     fun customStyle(): String = app.settings.customStyleUrl
 
