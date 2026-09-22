@@ -59,8 +59,8 @@ object LocalMapStyleServer {
         if (!started.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
-        onlineCache = File(appContext.filesDir, "map_cache_maptiler_v1").apply { mkdirs() }
-        offlineRoot = File(appContext.filesDir, "offline_regions").apply { mkdirs() }
+        onlineCache = File(appContext.filesDir, "map_cache_0917_rebuild_v2").apply { mkdirs() }
+        offlineRoot = File(appContext.filesDir, "offline_regions_0917_rebuild_v2").apply { mkdirs() }
 
         try {
             val loopback = InetAddress.getByName("127.0.0.1")
@@ -255,7 +255,7 @@ object LocalMapStyleServer {
                 url = { z, x, y ->
                     "https://api.maptiler.com/maps/streets-v4/256/$z/$x/$y.png?key=$key"
                 },
-                minIntervalMs = 25L
+                minIntervalMs = 80L
             )
 
             SOURCE_SATELLITE -> Provider(
@@ -263,7 +263,7 @@ object LocalMapStyleServer {
                 url = { z, x, y ->
                     "https://api.maptiler.com/tiles/satellite-v2/$z/$x/$y.jpg?key=$key"
                 },
-                minIntervalMs = 25L
+                minIntervalMs = 80L
             )
 
             SOURCE_OUTDOOR -> Provider(
@@ -271,7 +271,7 @@ object LocalMapStyleServer {
                 url = { z, x, y ->
                     "https://api.maptiler.com/maps/outdoor-v4/256/$z/$x/$y.png?key=$key"
                 },
-                minIntervalMs = 25L
+                minIntervalMs = 80L
             )
 
             else -> error("Unknown source: $source")
@@ -295,11 +295,16 @@ object LocalMapStyleServer {
 
             awaitProviderSlot(provider)
 
-            val connection = URL(provider.url(z, x, y)).openConnection() as HttpURLConnection
+            val remoteY = if (source == SOURCE_SATELLITE) {
+                ((1L shl z) - 1L - y.toLong()).toInt()
+            } else {
+                y
+            }
+            val connection = URL(provider.url(z, x, remoteY)).openConnection() as HttpURLConnection
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "ForestNavigator/0.9.14 Android")
+            connection.setRequestProperty("User-Agent", "ForestNavigator/1.0.1 Android")
             connection.setRequestProperty("Accept", "image/*,*/*;q=0.8")
             connection.setRequestProperty("Accept-Encoding", "identity")
 
@@ -313,11 +318,11 @@ object LocalMapStyleServer {
                 }
 
                 lastError = "MapTiler HTTP $status"
-                if (status == 429) {
+                if (status == 429 || status in 500..599) {
                     val retryAfterMs = connection.getHeaderField("Retry-After")
                         ?.toLongOrNull()
                         ?.times(1000L)
-                        ?: 5_000L
+                        ?: ((1_500L shl attempt.coerceAtMost(4))).coerceAtMost(30_000L)
                     providerBlockedUntil[provider.id] =
                         System.currentTimeMillis() + retryAfterMs.coerceAtMost(30_000L)
                 }
@@ -483,7 +488,7 @@ object LocalMapStyleServer {
     private const val SOURCE_OUTDOOR = "outdoor"
     private val VALID_SOURCES = setOf(SOURCE_STREET, SOURCE_SATELLITE, SOURCE_OUTDOOR)
 
-    private const val CONNECT_TIMEOUT_MS = 4_000
-    private const val READ_TIMEOUT_MS = 8_000
-    private const val MAX_ATTEMPTS = 2
+    private const val CONNECT_TIMEOUT_MS = 10_000
+    private const val READ_TIMEOUT_MS = 20_000
+    private const val MAX_ATTEMPTS = 4
 }
