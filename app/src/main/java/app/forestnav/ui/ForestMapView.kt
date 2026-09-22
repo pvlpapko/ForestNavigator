@@ -34,6 +34,9 @@ import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
 
 private class NativeMapState {
     var map: MapLibreMap? = null
@@ -45,6 +48,7 @@ private class NativeMapState {
     val waypointIcons = mutableMapOf<WaypointType, Icon>()
     var initialCameraAnimationDone = false
     var lastRecenterToken: Int = -1
+    var lastScaleMeters: Double = 0.0
 }
 
 @Composable
@@ -57,7 +61,8 @@ fun ForestMapView(
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
     onMapLongPress: (Double, Double) -> Unit = { _, _ -> },
-    onWaypointClick: (Waypoint) -> Unit = {}
+    onWaypointClick: (Waypoint) -> Unit = {},
+    onMapScaleChanged: (Double) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -67,6 +72,7 @@ fun ForestMapView(
     val currentMapClick = rememberUpdatedState(onMapClick)
     val currentLongPress = rememberUpdatedState(onMapLongPress)
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
+    val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
     DisposableEffect(mapView, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -81,12 +87,8 @@ fun ForestMapView(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         mapView.onCreate(null)
-        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-            mapView.onStart()
-        }
-        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-            mapView.onResume()
-        }
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) mapView.onStart()
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) mapView.onResume()
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching { mapView.onPause() }
@@ -109,9 +111,7 @@ fun ForestMapView(
                         if (currentPlacementEnabled.value) {
                             currentMapClick.value(point.latitude, point.longitude)
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
 
                     map.addOnMapLongClickListener { point ->
@@ -125,9 +125,14 @@ fun ForestMapView(
                         if (waypoint != null) {
                             currentWaypointClick.value(waypoint)
                             true
-                        } else {
-                            false
-                        }
+                        } else false
+                    }
+
+                    map.addOnCameraMoveListener {
+                        publishScale(map, mapView, state, currentScaleCallback.value)
+                    }
+                    map.addOnCameraIdleListener {
+                        publishScale(map, mapView, state, currentScaleCallback.value, force = true)
                     }
 
                     val target = LatLng(location.latitude, location.longitude)
@@ -138,16 +143,16 @@ fun ForestMapView(
 
                     state.lastRecenterToken = recenterToken
                     applyStyle(context, map, state, styleUrl, location, waypoints)
+                    mapView.post {
+                        publishScale(map, mapView, state, currentScaleCallback.value, force = true)
+                    }
                 }
             }
         },
         update = {
             val map = state.map ?: return@AndroidView
 
-            if (styleUrl != null &&
-                styleUrl != state.loadedStyle &&
-                styleUrl != state.loadingStyle
-            ) {
+            if (styleUrl != null && styleUrl != state.loadedStyle && styleUrl != state.loadingStyle) {
                 applyStyle(context, map, state, styleUrl, location, waypoints)
                 return@AndroidView
             }
@@ -165,6 +170,30 @@ fun ForestMapView(
             }
         }
     )
+}
+
+private fun publishScale(
+    map: MapLibreMap,
+    mapView: MapView,
+    state: NativeMapState,
+    callback: (Double) -> Unit,
+    force: Boolean = false
+) {
+    val width = mapView.width
+    if (width <= 0) return
+
+    val zoom = map.cameraPosition.zoom
+    val latitude = map.cameraPosition.target?.latitude ?: 0.0
+    val metersPerPixel = 156543.03392 * cos(Math.toRadians(latitude)) / 2.0.pow(zoom)
+    val referencePixels = minOf(width * 0.32, 160.0 * mapView.resources.displayMetrics.density)
+    val scaleMeters = (metersPerPixel * referencePixels).coerceAtLeast(1.0)
+
+    val changedEnough = state.lastScaleMeters <= 0.0 ||
+        abs(scaleMeters - state.lastScaleMeters) / state.lastScaleMeters > 0.025
+    if (force || changedEnough) {
+        state.lastScaleMeters = scaleMeters
+        callback(scaleMeters)
+    }
 }
 
 private fun applyStyle(
@@ -200,10 +229,7 @@ private fun applyStyle(
     }
 
     if (MapStyles.isJsonStyle(url)) {
-        map.setStyle(
-            Style.Builder().fromJson(MapStyles.jsonPayload(url)),
-            onLoaded
-        )
+        map.setStyle(Style.Builder().fromJson(MapStyles.jsonPayload(url)), onLoaded)
     } else {
         map.setStyle(url, onLoaded)
     }
@@ -250,12 +276,9 @@ private fun updateWaypointAnnotations(
     waypoints: List<Waypoint>
 ) {
     val fingerprint = waypoints.fold(1) { acc, p -> 31 * acc + p.hashCode() }
-
     if (fingerprint == state.waypointFingerprint) return
 
-    state.waypointMarkers.forEach { marker ->
-        runCatching { map.removeMarker(marker) }
-    }
+    state.waypointMarkers.forEach { marker -> runCatching { map.removeMarker(marker) } }
     state.waypointMarkers = emptyList()
     state.waypointByMarkerId.clear()
 
@@ -263,11 +286,7 @@ private fun updateWaypointAnnotations(
         val marker = map.addMarker(
             MarkerOptions()
                 .position(LatLng(p.latitude, p.longitude))
-                .icon(
-                    state.waypointIcons.getOrPut(p.type) {
-                        createWaypointIcon(context, p.type)
-                    }
-                )
+                .icon(state.waypointIcons.getOrPut(p.type) { createWaypointIcon(context, p.type) })
                 .title(p.name)
                 .snippet(
                     p.accuracyMeters?.let { "Точность ±${String.format("%.1f", it)} м" }
@@ -280,7 +299,6 @@ private fun updateWaypointAnnotations(
 
     state.waypointFingerprint = fingerprint
 }
-
 
 @Suppress("DEPRECATION")
 private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
