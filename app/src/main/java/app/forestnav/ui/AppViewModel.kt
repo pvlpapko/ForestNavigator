@@ -2,6 +2,9 @@ package app.forestnav.ui
 
 import android.app.Application
 import android.location.Location
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.forestnav.ForestNavApplication
@@ -26,6 +29,31 @@ import kotlinx.coroutines.withContext
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as ForestNavApplication
+    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    private val _online = MutableStateFlow(isValidatedOnline())
+    val online = _online.asStateFlow()
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _online.value = isValidatedOnline()
+        }
+
+        override fun onLost(network: Network) {
+            _online.value = isValidatedOnline()
+        }
+
+        override fun onCapabilitiesChanged(
+            network: Network,
+            networkCapabilities: NetworkCapabilities
+        ) {
+            _online.value = networkCapabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_INTERNET
+            ) && networkCapabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            )
+        }
+    }
+
     val gnss = GnssEngine(application)
     val compass = CompassEngine(application)
     private val offline = OfflineMapManager(application)
@@ -61,6 +89,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val offlineRegions = _offlineRegions.asStateFlow()
 
     init {
+        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+        _online.value = isValidatedOnline()
         refreshWaypoints()
         refreshOfflineRegions()
         viewModelScope.launch {
@@ -84,9 +114,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLayer(layer: MapLayer) { _mapLayer.value = layer }
 
-    fun styleUrl(): String? = MapStyles.url(_mapLayer.value, app.settings)
+    fun styleUrl(online: Boolean): String? =
+        MapStyles.url(_mapLayer.value, app.settings, online)
 
-    fun highDetailMapsEnabled(): Boolean = true
+    fun highDetailMapsEnabled(): Boolean =
+        MapStyles.highDetailEnabled(_mapLayer.value, app.settings)
 
     fun setNavigationTarget(w: Waypoint?) { _navigationTarget.value = w }
 
@@ -226,7 +258,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshWaypointsInternal() { _waypoints.value = app.database.listWaypoints() }
 
+    private fun isValidatedOnline(): Boolean {
+        val network = connectivity.activeNetwork ?: return false
+        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
     override fun onCleared() {
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         preciseJob?.cancel()
         gnss.stop()
         compass.stop()
