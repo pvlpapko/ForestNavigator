@@ -299,7 +299,7 @@ object LocalMapStyleServer {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "ForestNavigator/0.9.13 Android")
+            connection.setRequestProperty("User-Agent", "ForestNavigator/0.9.14 Android")
             connection.setRequestProperty("Accept", "image/*,*/*;q=0.8")
             connection.setRequestProperty("Accept-Encoding", "identity")
 
