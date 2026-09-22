@@ -848,7 +848,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 ) {
                     Icon(Icons.Default.Stop, null)
                     Spacer(Modifier.width(6.dp))
-                    Text("Отменить загрузку")
+                    Text("Пауза")
                 }
             } else {
                 Button(
@@ -868,7 +868,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 }
                 if (p.cancelled) {
                     Text(
-                        "Загрузка отменена.",
+                        "Загрузка приостановлена. Повторный запуск этой же области продолжит с уже скачанных тайлов.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
