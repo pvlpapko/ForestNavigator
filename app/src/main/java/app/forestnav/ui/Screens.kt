@@ -82,8 +82,8 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "HD спутник: MapTiler • близкое приближение до z22"
-                                MapLayer.TERRAIN -> "Рельеф: улицы, тропы, горизонтали и высоты + hillshade"
+                                MapLayer.SATELLITE -> "HD спутник: прямые MapTiler Satellite tiles • до z22"
+                                MapLayer.TERRAIN -> "Outdoor: дома, леса, вода, улицы, тропы, горизонтали и высоты"
                                 MapLayer.SATELLITE_TERRAIN -> "HD спутник + теневой рельеф"
                                 else -> ""
                             }
@@ -944,8 +944,8 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Режим «Рельеф» использует подробную OpenTopoMap-подложку с улицами, дорогами, тропами, горизонталями " +
-                "и отметками высот. Карта автоматически поворачивается по направлению телефона. Тайлы кэшируются локально."
+            "Режим «Рельеф» использует MapTiler Outdoor до z22: дома, леса, вода, улицы, тропы, горизонтали " +
+                "и отметки высот. Карта следует за текущей позицией и автоматически поворачивается по направлению телефона."
         )
         AssistChip(
             onClick = {},
