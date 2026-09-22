@@ -7,7 +7,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.hardware.GeomagneticField
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -27,7 +26,6 @@ import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.Marker
 import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
-import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.LocationComponentOptions
@@ -51,15 +49,8 @@ private class NativeMapState {
     var initialCameraAnimationDone = false
     var lastRecenterToken: Int = -1
     var lastScaleMeters: Double = 0.0
-
     var gestureActive = false
     var followUser = true
-    var lastCameraUpdateAt = 0L
-    var lastCameraLatitude: Double? = null
-    var lastCameraLongitude: Double? = null
-    var lastCameraBearing: Double? = null
-    var latestLocation: Location? = null
-    var latestHeading: Float? = null
 }
 
 @Composable
@@ -76,6 +67,11 @@ fun ForestMapView(
     onWaypointClick: (Waypoint) -> Unit = {},
     onMapScaleChanged: (Double) -> Unit = {}
 ) {
+    // heading is still consumed by the screen's compass/navigation UI.
+    // Map rotation itself intentionally uses MapLibre's native compass animator.
+    @Suppress("UNUSED_VARIABLE")
+    val externalHeading = heading
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val state = remember { NativeMapState() }
@@ -116,8 +112,6 @@ fun ForestMapView(
             mapView.apply {
                 getMapAsync { map ->
                     state.map = map
-                    state.latestLocation = location
-                    state.latestHeading = heading
 
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
@@ -153,10 +147,14 @@ fun ForestMapView(
 
                     map.addOnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
-                            // Manual pan/zoom/rotation means: stop following.
-                            // The map must stay where the user leaves it until "Я здесь".
+                            // A manual pan/zoom/rotate switches to free exploration.
+                            // Nothing recenters again until the user taps "Я здесь".
                             state.gestureActive = true
                             state.followUser = false
+                            val component = map.locationComponent
+                            if (component.isLocationComponentActivated) {
+                                component.cameraMode = CameraMode.NONE
+                            }
                         }
                     }
 
@@ -178,7 +176,8 @@ fun ForestMapView(
                     map.cameraPosition = CameraPosition.Builder()
                         .target(LatLng(location.latitude, location.longitude))
                         .zoom(15.5)
-                        .bearing(trueHeading(location, heading) ?: 0.0)
+                        .bearing(0.0)
+                        .tilt(0.0)
                         .build()
 
                     state.lastRecenterToken = recenterToken
@@ -188,7 +187,6 @@ fun ForestMapView(
                         state = state,
                         styleUrl = styleUrl,
                         location = location,
-                        heading = heading,
                         waypoints = waypoints
                     )
 
@@ -206,8 +204,6 @@ fun ForestMapView(
         },
         update = {
             val map = state.map ?: return@AndroidView
-            state.latestLocation = location
-            state.latestHeading = heading
 
             if (styleUrl != null &&
                 styleUrl != state.loadedStyle &&
@@ -219,7 +215,6 @@ fun ForestMapView(
                     state = state,
                     styleUrl = styleUrl,
                     location = location,
-                    heading = heading,
                     waypoints = waypoints
                 )
                 return@AndroidView
@@ -231,106 +226,16 @@ fun ForestMapView(
             if (state.lastRecenterToken != recenterToken) {
                 state.gestureActive = false
                 state.followUser = true
-                syncCamera(
+                enableNativeFollow(
                     map = map,
-                    state = state,
                     location = location,
-                    heading = heading,
-                    force = true,
-                    durationMs = 520,
-                    minimumZoom = 17.0
+                    minimumZoom = 17.0,
+                    transitionDurationMs = 550L
                 )
                 state.lastRecenterToken = recenterToken
-            } else if (state.followUser && !state.gestureActive) {
-                syncCamera(
-                    map = map,
-                    state = state,
-                    location = location,
-                    heading = heading
-                )
             }
         }
     )
-}
-
-private fun syncCamera(
-    map: MapLibreMap,
-    state: NativeMapState,
-    location: Location,
-    heading: Float?,
-    force: Boolean = false,
-    durationMs: Int = 340,
-    minimumZoom: Double? = null
-) {
-    if (state.gestureActive && !force) return
-
-    val now = System.currentTimeMillis()
-    val bearing = trueHeading(location, heading) ?: map.cameraPosition.bearing
-
-    val previousLat = state.lastCameraLatitude
-    val previousLon = state.lastCameraLongitude
-    val movedMeters = if (previousLat == null || previousLon == null) {
-        Double.MAX_VALUE
-    } else {
-        val result = FloatArray(1)
-        Location.distanceBetween(
-            previousLat,
-            previousLon,
-            location.latitude,
-            location.longitude,
-            result
-        )
-        result[0].toDouble()
-    }
-
-    val previousBearing = state.lastCameraBearing
-    val bearingDelta = if (previousBearing == null) {
-        180.0
-    } else {
-        angularDistance(previousBearing, bearing)
-    }
-
-    val elapsed = now - state.lastCameraUpdateAt
-    if (!force) {
-        if (elapsed < CAMERA_MIN_INTERVAL_MS) return
-        if (movedMeters < MIN_CAMERA_MOVE_METERS &&
-            bearingDelta < MIN_CAMERA_BEARING_DELTA &&
-            elapsed < CAMERA_KEEPALIVE_MS
-        ) {
-            return
-        }
-    }
-
-    val current = map.cameraPosition
-    val targetZoom = minimumZoom?.let { maxOf(current.zoom, it) } ?: current.zoom
-    val target = CameraPosition.Builder(current)
-        .target(LatLng(location.latitude, location.longitude))
-        .zoom(targetZoom)
-        .bearing(bearing)
-        .tilt(0.0)
-        .build()
-
-    map.easeCamera(CameraUpdateFactory.newCameraPosition(target), durationMs)
-
-    state.lastCameraUpdateAt = now
-    state.lastCameraLatitude = location.latitude
-    state.lastCameraLongitude = location.longitude
-    state.lastCameraBearing = bearing
-}
-
-private fun angularDistance(a: Double, b: Double): Double =
-    abs(((b - a + 540.0) % 360.0) - 180.0)
-
-private fun trueHeading(location: Location, heading: Float?): Double? {
-    val magnetic = heading ?: return null
-    val altitude = if (location.hasAltitude()) location.altitude else 0.0
-    val declination = GeomagneticField(
-        location.latitude.toFloat(),
-        location.longitude.toFloat(),
-        altitude.toFloat(),
-        System.currentTimeMillis()
-    ).declination
-    return ((magnetic + declination + 360f) % 360f).toDouble()
 }
 
 private fun publishScale(
@@ -368,7 +273,6 @@ private fun applyStyle(
     state: NativeMapState,
     styleUrl: String?,
     location: Location,
-    heading: Float?,
     waypoints: List<Waypoint>
 ) {
     val url = styleUrl ?: return
@@ -382,29 +286,30 @@ private fun applyStyle(
         state.waypointByMarkerId.clear()
         state.waypointFingerprint = 0
 
-        setupLocationPuck(context, map, style, location)
+        setupLocationPuck(
+            context = context,
+            map = map,
+            style = style,
+            location = location,
+            followUser = state.followUser
+        )
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
             state.followUser = true
-            syncCamera(
+            enableNativeFollow(
                 map = map,
-                state = state,
                 location = location,
-                heading = heading,
-                force = true,
-                durationMs = 600,
-                minimumZoom = 16.5
+                minimumZoom = 16.5,
+                transitionDurationMs = 650L
             )
             state.initialCameraAnimationDone = true
         } else if (state.followUser) {
-            syncCamera(
+            enableNativeFollow(
                 map = map,
-                state = state,
                 location = location,
-                heading = heading,
-                force = true,
-                durationMs = 280
+                minimumZoom = null,
+                transitionDurationMs = 250L
             )
         }
     }
@@ -421,7 +326,8 @@ private fun setupLocationPuck(
     context: Context,
     map: MapLibreMap,
     style: Style,
-    location: Location
+    location: Location,
+    followUser: Boolean
 ) {
     val component = map.locationComponent
 
@@ -429,6 +335,7 @@ private fun setupLocationPuck(
         val puckOptions = LocationComponentOptions.builder(context)
             .bearingOnTop(true)
             .compassAnimationEnabled(true)
+            .trackingGesturesManagement(false)
             .build()
 
         component.activateLocationComponent(
@@ -441,10 +348,10 @@ private fun setupLocationPuck(
     }
 
     component.isLocationComponentEnabled = true
-    component.cameraMode = CameraMode.NONE
     component.renderMode = RenderMode.COMPASS
-    component.setMaxAnimationFps(20)
+    component.setMaxAnimationFps(60)
     component.forceLocationUpdate(location)
+    component.cameraMode = if (followUser) CameraMode.TRACKING_COMPASS else CameraMode.NONE
 }
 
 @SuppressLint("MissingPermission")
@@ -453,6 +360,31 @@ private fun updateLocationPuck(map: MapLibreMap, location: Location) {
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
         component.forceLocationUpdate(location)
     }
+}
+
+@SuppressLint("MissingPermission")
+private fun enableNativeFollow(
+    map: MapLibreMap,
+    location: Location,
+    minimumZoom: Double?,
+    transitionDurationMs: Long
+) {
+    val component = map.locationComponent
+    if (!component.isLocationComponentActivated || !component.isLocationComponentEnabled) return
+
+    component.forceLocationUpdate(location)
+    component.renderMode = RenderMode.COMPASS
+    component.setMaxAnimationFps(60)
+
+    val targetZoom = minimumZoom?.let { maxOf(map.cameraPosition.zoom, it) }
+    component.setCameraMode(
+        CameraMode.TRACKING_COMPASS,
+        transitionDurationMs,
+        targetZoom,
+        null,
+        0.0,
+        null
+    )
 }
 
 @Suppress("DEPRECATION")
@@ -537,8 +469,3 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
 
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
-
-private const val CAMERA_MIN_INTERVAL_MS = 340L
-private const val CAMERA_KEEPALIVE_MS = 1200L
-private const val MIN_CAMERA_MOVE_METERS = 1.8
-private const val MIN_CAMERA_BEARING_DELTA = 2.5
