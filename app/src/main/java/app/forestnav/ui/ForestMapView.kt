@@ -53,6 +53,7 @@ private class NativeMapState {
     var lastScaleMeters: Double = 0.0
 
     var gestureActive = false
+    var followUser = true
     var lastCameraUpdateAt = 0L
     var lastCameraLatitude: Double? = null
     var lastCameraLongitude: Double? = null
@@ -121,7 +122,7 @@ fun ForestMapView(
                     map.uiSettings.isCompassEnabled = false
                     map.uiSettings.isLogoEnabled = true
                     map.uiSettings.isAttributionEnabled = true
-                    map.uiSettings.isRotateGesturesEnabled = false
+                    map.uiSettings.isRotateGesturesEnabled = true
                     map.uiSettings.isTiltGesturesEnabled = false
                     map.setMaxZoomPreference(25.5)
 
@@ -152,7 +153,10 @@ fun ForestMapView(
 
                     map.addOnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                            // Manual pan/zoom/rotation means: stop following.
+                            // The map must stay where the user leaves it until "Я здесь".
                             state.gestureActive = true
+                            state.followUser = false
                         }
                     }
 
@@ -168,21 +172,7 @@ fun ForestMapView(
                             currentScaleCallback.value,
                             force = true
                         )
-
-                        if (state.gestureActive) {
-                            state.gestureActive = false
-                            val latestLocation = state.latestLocation
-                            if (latestLocation != null) {
-                                syncCamera(
-                                    map = map,
-                                    state = state,
-                                    location = latestLocation,
-                                    heading = state.latestHeading,
-                                    force = true,
-                                    durationMs = 220
-                                )
-                            }
-                        }
+                        state.gestureActive = false
                     }
 
                     map.cameraPosition = CameraPosition.Builder()
@@ -240,17 +230,18 @@ fun ForestMapView(
 
             if (state.lastRecenterToken != recenterToken) {
                 state.gestureActive = false
+                state.followUser = true
                 syncCamera(
                     map = map,
                     state = state,
                     location = location,
                     heading = heading,
                     force = true,
-                    durationMs = 420,
+                    durationMs = 520,
                     minimumZoom = 17.0
                 )
                 state.lastRecenterToken = recenterToken
-            } else if (!state.gestureActive) {
+            } else if (state.followUser && !state.gestureActive) {
                 syncCamera(
                     map = map,
                     state = state,
@@ -268,7 +259,7 @@ private fun syncCamera(
     location: Location,
     heading: Float?,
     force: Boolean = false,
-    durationMs: Int = 180,
+    durationMs: Int = 340,
     minimumZoom: Double? = null
 ) {
     if (state.gestureActive && !force) return
@@ -395,24 +386,25 @@ private fun applyStyle(
         updateWaypointAnnotations(context, map, state, waypoints)
 
         if (!state.initialCameraAnimationDone) {
+            state.followUser = true
             syncCamera(
                 map = map,
                 state = state,
                 location = location,
                 heading = heading,
                 force = true,
-                durationMs = 550,
+                durationMs = 600,
                 minimumZoom = 16.5
             )
             state.initialCameraAnimationDone = true
-        } else {
+        } else if (state.followUser) {
             syncCamera(
                 map = map,
                 state = state,
                 location = location,
                 heading = heading,
                 force = true,
-                durationMs = 220
+                durationMs = 280
             )
         }
     }
@@ -546,7 +538,7 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
 
-private const val CAMERA_MIN_INTERVAL_MS = 180L
-private const val CAMERA_KEEPALIVE_MS = 900L
-private const val MIN_CAMERA_MOVE_METERS = 1.5
-private const val MIN_CAMERA_BEARING_DELTA = 1.8
+private const val CAMERA_MIN_INTERVAL_MS = 340L
+private const val CAMERA_KEEPALIVE_MS = 1200L
+private const val MIN_CAMERA_MOVE_METERS = 1.8
+private const val MIN_CAMERA_BEARING_DELTA = 2.5

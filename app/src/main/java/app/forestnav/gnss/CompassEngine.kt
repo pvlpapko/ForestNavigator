@@ -129,9 +129,9 @@ class CompassEngine(private val context: Context) : SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     companion object {
-        private const val HEADING_ALPHA = 0.14f
-        private const val MIN_EMIT_DELTA_DEG = 0.6f
-        private const val EMIT_INTERVAL_NS = 140_000_000L
-        private const val FORCE_EMIT_INTERVAL_NS = 700_000_000L
+        private const val HEADING_ALPHA = 0.10f
+        private const val MIN_EMIT_DELTA_DEG = 1.0f
+        private const val EMIT_INTERVAL_NS = 180_000_000L
+        private const val FORCE_EMIT_INTERVAL_NS = 900_000_000L
     }
 }

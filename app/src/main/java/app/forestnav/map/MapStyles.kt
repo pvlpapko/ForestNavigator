@@ -12,16 +12,29 @@ enum class MapLayer(val title: String) {
     CUSTOM("Своя карта")
 }
 
+/**
+ * Built from the early MapTiler API setup that had the desired visual maps:
+ * - normal map: OpenFreeMap Liberty
+ * - satellite: MapTiler Satellite v4 official style
+ * - relief: MapTiler Outdoor v4 official style
+ * - satellite+relief: MapTiler Satellite v2 + Terrain RGB hillshade
+ *
+ * Online mode deliberately uses the provider's native style JSON directly.
+ * Offline mode switches to LocalMapStyleServer only when Android reports that
+ * validated internet is unavailable.
+ */
 object MapStyles {
+    const val OPEN_FREE_MAP = "https://tiles.openfreemap.org/styles/liberty"
     private const val JSON_PREFIX = "json:"
 
-    fun url(layer: MapLayer, settings: SettingsStore): String? {
+    fun url(
+        layer: MapLayer,
+        settings: SettingsStore,
+        online: Boolean = true
+    ): String? {
         if (layer == MapLayer.CUSTOM) {
             return settings.customStyleUrl.takeIf { it.isNotBlank() }
         }
-
-        val key = settings.mapTilerKey.takeIf { it.isNotBlank() }
-        val online = key != null && settings.hasValidatedInternet()
 
         if (!online) {
             return when (layer) {
@@ -33,19 +46,21 @@ object MapStyles {
             }
         }
 
-        val safeKey = encoded(key!!)
+        val key = settings.mapTilerKey.takeIf { it.isNotBlank() }
         return when (layer) {
-            MapLayer.MAP ->
-                "https://api.maptiler.com/maps/streets-v4/style.json?key=$safeKey"
+            MapLayer.MAP -> OPEN_FREE_MAP
 
-            MapLayer.SATELLITE ->
-                "https://api.maptiler.com/maps/satellite-v4/style.json?key=$safeKey"
+            MapLayer.SATELLITE -> key?.let {
+                "https://api.maptiler.com/maps/satellite-v4/style.json?key=${encoded(it)}"
+            } ?: LocalMapStyleServer.satelliteUrl()
 
-            MapLayer.TERRAIN ->
-                "https://api.maptiler.com/maps/outdoor-v4/style.json?key=$safeKey"
+            MapLayer.TERRAIN -> key?.let {
+                "https://api.maptiler.com/maps/outdoor-v4/style.json?key=${encoded(it)}"
+            } ?: LocalMapStyleServer.terrainUrl()
 
-            MapLayer.SATELLITE_TERRAIN ->
-                combinedStyle(settings, safeKey)
+            MapLayer.SATELLITE_TERRAIN -> key?.let {
+                combinedStyle(encoded(it))
+            } ?: LocalMapStyleServer.combinedUrl()
 
             MapLayer.CUSTOM -> null
         }
@@ -56,13 +71,13 @@ object MapStyles {
     fun jsonPayload(value: String): String = value.removePrefix(JSON_PREFIX)
 
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
-        settings.mapTilerKey.isNotBlank() && layer != MapLayer.CUSTOM
+        layer == MapLayer.MAP || settings.mapTilerKey.isNotBlank()
 
-    private fun combinedStyle(settings: SettingsStore, safeKey: String): String {
+    private fun combinedStyle(safeKey: String): String {
         val json = """
             {
               "version": 8,
-              "name": "ForestNavigator Satellite + Relief",
+              "name": "ForestNavigator Satellite + Relief HD",
               "sources": {
                 "satellite": {
                   "type": "raster",
@@ -92,7 +107,7 @@ object MapStyles {
                   "type": "hillshade",
                   "source": "terrain",
                   "paint": {
-                    "hillshade-exaggeration": 0.58,
+                    "hillshade-exaggeration": 0.64,
                     "hillshade-shadow-color": "#261f18",
                     "hillshade-highlight-color": "#fff8e9",
                     "hillshade-accent-color": "#7a684d"
@@ -102,8 +117,7 @@ object MapStyles {
             }
         """.trimIndent()
 
-        return settings.writeGeneratedStyle("maptiler_satellite_relief_v3.json", json)
-            ?: "https://api.maptiler.com/maps/hybrid-v4/style.json?key=$safeKey"
+        return JSON_PREFIX + json
     }
 
     private fun encoded(value: String): String =
