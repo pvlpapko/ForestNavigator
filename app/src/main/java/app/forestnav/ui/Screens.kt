@@ -347,12 +347,14 @@ fun MapScreen(vm: AppViewModel) {
 
 private fun mapScaleLabel(meters: Double): String {
     if (meters <= 0.0) return "—"
-    return if (meters < 1000.0) {
-        "${meters.roundToInt()} м"
-    } else {
-        val km = meters / 1000.0
-        if (km < 10.0) String.format(java.util.Locale.getDefault(), "%.1f км", km)
-        else "${km.roundToInt()} км"
+    return when {
+        meters < 10.0 -> String.format(java.util.Locale.getDefault(), "%.1f м", meters)
+        meters < 1000.0 -> "${meters.roundToInt()} м"
+        else -> {
+            val km = meters / 1000.0
+            if (km < 10.0) String.format(java.util.Locale.getDefault(), "%.1f км", km)
+            else "${km.roundToInt()} км"
+        }
     }
 }
 
