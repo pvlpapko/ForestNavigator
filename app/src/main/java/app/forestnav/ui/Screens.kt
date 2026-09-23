@@ -78,6 +78,7 @@ fun MapScreen(vm: AppViewModel) {
 
                 if (layer == MapLayer.SATELLITE ||
                     layer == MapLayer.TERRAIN ||
+                    layer == MapLayer.RELIEF ||
                     layer == MapLayer.SATELLITE_TERRAIN ||
                     layer == MapLayer.THREE_D ||
                     layer == MapLayer.THREE_D_TERRAIN
@@ -87,6 +88,7 @@ fun MapScreen(vm: AppViewModel) {
                             when (layer) {
                                 MapLayer.SATELLITE -> "Mapbox Satellite • HD спутниковые и аэрофотоснимки"
                                 MapLayer.TERRAIN -> "Топографическая • Mapbox Outdoors: тропы, дороги, леса, вода, подписи и горизонтали"
+                                MapLayer.RELIEF -> "Рельеф • исходный вариант: Mapbox Outdoors + Terrain RGB hillshade"
                                 MapLayer.SATELLITE_TERRAIN -> "Mapbox Satellite Streets + Terrain RGB hillshade"
                                 MapLayer.THREE_D -> "3D спутник • настоящий DEM-рельеф; доступен наклон до походного вида"
                                 MapLayer.THREE_D_TERRAIN -> "3D+рельеф • топографическая Outdoors + настоящий DEM-рельеф"
@@ -96,6 +98,7 @@ fun MapScreen(vm: AppViewModel) {
                             when (layer) {
                                 MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
                                 MapLayer.TERRAIN -> "Топографическая карта"
+                                MapLayer.RELIEF -> "Топография + теневой рельеф"
                                 MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
                                 MapLayer.THREE_D -> "3D спутник"
                                 MapLayer.THREE_D_TERRAIN -> "3D+рельеф"
@@ -1028,7 +1031,8 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
             "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
-                "топографическая — Outdoors v12, спутник+рельеф — Satellite Streets + Terrain RGB, " +
+                "топографическая — Outdoors v12, рельеф — Outdoors v12 + Terrain RGB hillshade, " +
+                "спутник+рельеф — Satellite Streets + Terrain RGB, " +
                 "3D спутник — Satellite Streets + DEM, 3D+рельеф — Outdoors + DEM. " +
                 "В 3D доступен жест наклона до 85° и кнопка «Походный». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
                 "а недостающие тайлы подгружают только при наличии сети."

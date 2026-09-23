@@ -71,6 +71,7 @@ object LocalMapStyleServer {
     fun mapUrl(): String = baseUrl("style/map.json")
     fun satelliteUrl(): String = baseUrl("style/satellite.json")
     fun terrainUrl(): String = baseUrl("style/terrain.json")
+    fun reliefUrl(): String = baseUrl("style/relief.json")
     fun combinedUrl(): String = baseUrl("style/combined.json")
 
     /**
@@ -85,6 +86,10 @@ object LocalMapStyleServer {
         MapLayer.MAP -> listOf(MapboxSource.STREETS.id)
         MapLayer.SATELLITE -> listOf(MapboxSource.SATELLITE.id)
         MapLayer.TERRAIN -> listOf(MapboxSource.OUTDOORS.id)
+        MapLayer.RELIEF -> listOf(
+            MapboxSource.OUTDOORS.id,
+            MapboxSource.TERRAIN_RGB.id
+        )
         MapLayer.SATELLITE_TERRAIN -> listOf(
             MapboxSource.SATELLITE_STREETS.id,
             MapboxSource.TERRAIN_RGB.id
@@ -134,6 +139,7 @@ object LocalMapStyleServer {
             path == "style/map.json" -> sendJson(client, localSingle(MapboxSource.STREETS))
             path == "style/satellite.json" -> sendJson(client, localSingle(MapboxSource.SATELLITE))
             path == "style/terrain.json" -> sendJson(client, localSingle(MapboxSource.OUTDOORS))
+            path == "style/relief.json" -> sendJson(client, localRelief())
             path == "style/combined.json" -> sendJson(client, localCombined())
             path.startsWith("tile/") -> serveTile(client, path)
             else -> sendStatus(client, 404, "Not Found")
@@ -295,6 +301,54 @@ object LocalMapStyleServer {
     private fun localSingle(source: MapboxSource): String = """
         {"version":8,"sources":{"${source.id}":{"type":"raster","tiles":["${localTemplate(source)}"],"scheme":"xyz","tileSize":${source.tileSize},"minzoom":0,"maxzoom":${source.maxZoom}}},"layers":[{"id":"${source.id}","type":"raster","source":"${source.id}"}]}
     """.trimIndent()
+
+    private fun localRelief(): String {
+        val base = MapboxSource.OUTDOORS
+        val dem = MapboxSource.TERRAIN_RGB
+        return """
+            {
+              "version": 8,
+              "name": "Mapbox Outdoors + Relief",
+              "sources": {
+                "${base.id}": {
+                  "type": "raster",
+                  "tiles": ["${localTemplate(base)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${base.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${base.maxZoom}
+                },
+                "${dem.id}": {
+                  "type": "raster-dem",
+                  "tiles": ["${localTemplate(dem)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${dem.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${dem.maxZoom},
+                  "encoding": "mapbox"
+                }
+              },
+              "layers": [
+                {
+                  "id": "outdoors",
+                  "type": "raster",
+                  "source": "${base.id}"
+                },
+                {
+                  "id": "terrain-hillshade",
+                  "type": "hillshade",
+                  "source": "${dem.id}",
+                  "paint": {
+                    "hillshade-exaggeration": 0.56,
+                    "hillshade-shadow-color": "#3a3028",
+                    "hillshade-highlight-color": "#fff8e8",
+                    "hillshade-accent-color": "#7c674d"
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+    }
 
     private fun local3DSatellite(): String {
         val base = MapboxSource.SATELLITE_STREETS

@@ -6,6 +6,7 @@ enum class MapLayer(val title: String) {
     MAP("Карта"),
     SATELLITE("Спутник"),
     TERRAIN("Топографическая"),
+    RELIEF("Рельеф"),
     SATELLITE_TERRAIN("Спутник+рельеф"),
     THREE_D("3D спутник"),
     THREE_D_TERRAIN("3D+рельеф"),
@@ -46,6 +47,7 @@ object MapStyles {
             MapLayer.MAP -> LocalMapStyleServer.mapUrl()
             MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
             MapLayer.TERRAIN -> LocalMapStyleServer.terrainUrl()
+            MapLayer.RELIEF -> LocalMapStyleServer.reliefUrl()
             MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()
             MapLayer.THREE_D -> null
             MapLayer.THREE_D_TERRAIN -> null
