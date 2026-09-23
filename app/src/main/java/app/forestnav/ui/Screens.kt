@@ -89,7 +89,7 @@ fun MapScreen(vm: AppViewModel) {
                                 MapLayer.RELIEF -> "Рельеф • исходный вариант: Mapbox Outdoors + Terrain RGB hillshade"
                                 MapLayer.SATELLITE_TERRAIN -> "Спутник+рельеф • спутниковая база в том же HD по всей выбранной области"
                                 MapLayer.THREE_D -> "3D спутник • HD спутник + DEM; наклон до горизонта и вращение"
-                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • Outdoors + DEM; наклон до горизонта и вращение"
+                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • та же спутниковая карта, что в 3D, + усиленный рельеф DEM"
                                 else -> ""
                             }
                         } else {
@@ -173,7 +173,7 @@ fun MapScreen(vm: AppViewModel) {
                                 location = location!!,
                                 heading = heading,
                                 waypoints = waypoints,
-                                topographic = layer == MapLayer.THREE_D_TERRAIN,
+                                reliefOverlay = layer == MapLayer.THREE_D_TERRAIN,
                                 recenterToken = recenterToken,
                                 pointPlacementEnabled = pointPlacementMode,
                                 onMapClick = mapClick,
@@ -1038,7 +1038,7 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text(
             "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
                 "рельеф — Outdoors v12 + Terrain RGB hillshade, спутник+рельеф — Satellite Streets + Terrain RGB, " +
-                "3D спутник — Satellite Streets + DEM, 3D+рельеф — Outdoors + DEM. " +
+                "3D спутник — Satellite Streets + DEM, 3D+рельеф — та же Satellite Streets + DEM с усиленным hillshade-рельефом. " +
                 "Спутник и спутник+рельеф офлайн сохраняются в HD по всему выбранному радиусу. " +
                 "В 3D доступны вращение, жест наклона до 85° и кнопки «Походный»/«Горизонт». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
                 "а недостающие тайлы подгружают только при наличии сети."

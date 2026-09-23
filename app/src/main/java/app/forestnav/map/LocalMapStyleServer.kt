@@ -79,8 +79,8 @@ object LocalMapStyleServer {
      * Both the satellite raster and DEM point to this local proxy, so downloaded,
      * partially downloaded and normal runtime-cache tiles are reused before network.
      */
-    fun threeDStyleJson(topographic: Boolean = false): String =
-        if (topographic) local3DTopographic() else local3DSatellite()
+    fun threeDStyleJson(reliefOverlay: Boolean = false): String =
+        if (reliefOverlay) local3DRelief() else local3DSatellite()
 
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(MapboxSource.STREETS.id)
@@ -98,7 +98,7 @@ object LocalMapStyleServer {
             MapboxSource.TERRAIN_RGB.id
         )
         MapLayer.THREE_D_TERRAIN -> listOf(
-            MapboxSource.OUTDOORS.id,
+            MapboxSource.SATELLITE_STREETS.id,
             MapboxSource.TERRAIN_RGB.id
         )
         MapLayer.CUSTOM -> emptyList()
@@ -414,13 +414,16 @@ object LocalMapStyleServer {
     }
 
 
-    private fun local3DTopographic(): String {
-        val base = MapboxSource.OUTDOORS
+    private fun local3DRelief(): String {
+        // Same satellite base and 3D geometry as the normal 3D mode.
+        // The only visual difference is a stronger hillshade overlay so slopes,
+        // ridges and hollows are easier to read in the field.
+        val base = MapboxSource.SATELLITE_STREETS
         val dem = MapboxSource.TERRAIN_RGB
         return """
             {
               "version": 8,
-              "name": "Forest Navigator 3D Topographic",
+              "name": "Forest Navigator 3D Satellite + Relief",
               "sources": {
                 "${base.id}": {
                   "type": "raster",
@@ -446,7 +449,7 @@ object LocalMapStyleServer {
               },
               "layers": [
                 {
-                  "id": "outdoors",
+                  "id": "satellite-streets",
                   "type": "raster",
                   "source": "${base.id}",
                   "paint": {
@@ -459,10 +462,10 @@ object LocalMapStyleServer {
                   "type": "hillshade",
                   "source": "${dem.id}",
                   "paint": {
-                    "hillshade-exaggeration": 0.34,
-                    "hillshade-shadow-color": "#2a251f",
-                    "hillshade-highlight-color": "#fff8e6",
-                    "hillshade-accent-color": "#715d49"
+                    "hillshade-exaggeration": 0.52,
+                    "hillshade-shadow-color": "#2b211a",
+                    "hillshade-highlight-color": "#fff8e9",
+                    "hillshade-accent-color": "#756047"
                   }
                 }
               ]

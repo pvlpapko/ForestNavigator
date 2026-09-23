@@ -63,7 +63,7 @@ fun Forest3DMapView(
     location: Location,
     heading: Float?,
     waypoints: List<Waypoint>,
-    topographic: Boolean = false,
+    reliefOverlay: Boolean = false,
     recenterToken: Int = 0,
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
@@ -152,7 +152,7 @@ fun Forest3DMapView(
                             .build()
                     )
 
-                    mapboxMap.loadStyle(LocalMapStyleServer.threeDStyleJson(topographic)) {
+                    mapboxMap.loadStyle(LocalMapStyleServer.threeDStyleJson(reliefOverlay)) {
                         state.styleLoaded = true
                         state.lastRecenterToken = recenterToken
 
