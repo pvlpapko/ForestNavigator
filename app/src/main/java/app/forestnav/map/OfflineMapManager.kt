@@ -33,7 +33,7 @@ class OfflineMapManager(private val context: Context) {
 
     private val root = LocalMapStyleServer.offlineRoot(context)
     private val coordinator = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "forest-esri-offline-coordinator").apply { isDaemon = true }
+        Thread(runnable, "forest-mapbox-offline-coordinator").apply { isDaemon = true }
     }
     private val cancelRequested = AtomicBoolean(false)
     private val deletePartialOnCancel = AtomicBoolean(true)
@@ -104,18 +104,21 @@ class OfflineMapManager(private val context: Context) {
                 )
 
                 val allTasks = sources.flatMap { source ->
+                    val sourceSpec = MapboxProvider.sourceById(source)
+                    val zoomOffset = if (sourceSpec.tileSize == 512) 1 else 0
+                    val sourceMinZoom = (minZoom.toInt() - zoomOffset).coerceAtLeast(0)
                     val sourceMaxZoom = minOf(
-                        maxZoom.toInt(),
+                        maxZoom.toInt() - zoomOffset,
                         LocalMapStyleServer.maxDownloadZoom(source)
                     )
-                    if (sourceMaxZoom < minZoom.toInt()) {
+                    if (sourceMaxZoom < sourceMinZoom) {
                         emptyList()
                     } else {
                         buildTileList(
                             latitude = latitude,
                             longitude = longitude,
                             radiusKm = radiusKm,
-                            minZoom = minZoom.toInt(),
+                            minZoom = sourceMinZoom,
                             maxZoom = sourceMaxZoom
                         ).map { tile -> DownloadTask(source, tile) }
                     }
@@ -164,7 +167,7 @@ class OfflineMapManager(private val context: Context) {
 
                     val failures = Collections.synchronizedList(mutableListOf<DownloadTask>())
                     val pool = Executors.newFixedThreadPool(workerCountForRound(round)) { runnable ->
-                        Thread(runnable, "forest-esri-offline-worker").apply { isDaemon = true }
+                        Thread(runnable, "forest-mapbox-offline-worker").apply { isDaemon = true }
                     }
                     currentWorkerPool = pool
                     val latch = CountDownLatch(remaining.size)
