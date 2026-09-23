@@ -78,7 +78,8 @@ object LocalMapStyleServer {
      * Both the satellite raster and DEM point to this local proxy, so downloaded,
      * partially downloaded and normal runtime-cache tiles are reused before network.
      */
-    fun threeDStyleJson(): String = local3D()
+    fun threeDStyleJson(topographic: Boolean = false): String =
+        if (topographic) local3DTopographic() else local3DSatellite()
 
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(MapboxSource.STREETS.id)
@@ -90,6 +91,10 @@ object LocalMapStyleServer {
         )
         MapLayer.THREE_D -> listOf(
             MapboxSource.SATELLITE_STREETS.id,
+            MapboxSource.TERRAIN_RGB.id
+        )
+        MapLayer.THREE_D_TERRAIN -> listOf(
+            MapboxSource.OUTDOORS.id,
             MapboxSource.TERRAIN_RGB.id
         )
         MapLayer.CUSTOM -> emptyList()
@@ -291,13 +296,13 @@ object LocalMapStyleServer {
         {"version":8,"sources":{"${source.id}":{"type":"raster","tiles":["${localTemplate(source)}"],"scheme":"xyz","tileSize":${source.tileSize},"minzoom":0,"maxzoom":${source.maxZoom}}},"layers":[{"id":"${source.id}","type":"raster","source":"${source.id}"}]}
     """.trimIndent()
 
-    private fun local3D(): String {
+    private fun local3DSatellite(): String {
         val base = MapboxSource.SATELLITE_STREETS
         val dem = MapboxSource.TERRAIN_RGB
         return """
             {
               "version": 8,
-              "name": "Forest Navigator 3D",
+              "name": "Forest Navigator 3D Satellite",
               "sources": {
                 "${base.id}": {
                   "type": "raster",
@@ -340,6 +345,63 @@ object LocalMapStyleServer {
                     "hillshade-shadow-color": "#221b17",
                     "hillshade-highlight-color": "#fff8e9",
                     "hillshade-accent-color": "#6a5744"
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+    }
+
+
+    private fun local3DTopographic(): String {
+        val base = MapboxSource.OUTDOORS
+        val dem = MapboxSource.TERRAIN_RGB
+        return """
+            {
+              "version": 8,
+              "name": "Forest Navigator 3D Topographic",
+              "sources": {
+                "${base.id}": {
+                  "type": "raster",
+                  "tiles": ["${localTemplate(base)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${base.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${base.maxZoom}
+                },
+                "${dem.id}": {
+                  "type": "raster-dem",
+                  "tiles": ["${localTemplate(dem)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${dem.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${dem.maxZoom},
+                  "encoding": "mapbox"
+                }
+              },
+              "terrain": {
+                "source": "${dem.id}",
+                "exaggeration": 1.35
+              },
+              "layers": [
+                {
+                  "id": "outdoors",
+                  "type": "raster",
+                  "source": "${base.id}",
+                  "paint": {
+                    "raster-opacity": 1.0,
+                    "raster-resampling": "linear"
+                  }
+                },
+                {
+                  "id": "terrain-hillshade",
+                  "type": "hillshade",
+                  "source": "${dem.id}",
+                  "paint": {
+                    "hillshade-exaggeration": 0.34,
+                    "hillshade-shadow-color": "#2a251f",
+                    "hillshade-highlight-color": "#fff8e6",
+                    "hillshade-accent-color": "#715d49"
                   }
                 }
               ]

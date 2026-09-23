@@ -11,8 +11,8 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 34
-        versionName = "1.2.2"
+        versionCode = 35
+        versionName = "1.2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "MAPBOX_TOKEN_A", "\"pk.\"")

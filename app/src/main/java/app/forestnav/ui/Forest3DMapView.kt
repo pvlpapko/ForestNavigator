@@ -6,12 +6,23 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.location.Location
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -20,6 +31,7 @@ import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.map.LocalMapStyleServer
 import com.mapbox.geojson.Point
+import com.mapbox.maps.CameraBoundsOptions
 import com.mapbox.maps.CameraOptions
 import com.mapbox.maps.MapView
 import com.mapbox.maps.plugin.annotation.annotations
@@ -51,6 +63,7 @@ fun Forest3DMapView(
     location: Location,
     heading: Float?,
     waypoints: List<Waypoint>,
+    topographic: Boolean = false,
     recenterToken: Int = 0,
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
@@ -95,83 +108,136 @@ fun Forest3DMapView(
         }
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = {
-            mapView.apply {
-                gestures.pitchEnabled = true
-                gestures.rotateEnabled = true
-                gestures.scrollEnabled = true
-                gestures.pinchToZoomEnabled = true
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                mapView.apply {
+                    gestures.pitchEnabled = true
+                    gestures.rotateEnabled = true
+                    gestures.scrollEnabled = true
+                    gestures.pinchToZoomEnabled = true
 
-                gestures.addOnMapClickListener { point ->
-                    if (currentPlacementEnabled.value) {
-                        currentMapClick.value(point.latitude(), point.longitude())
-                        true
-                    } else {
-                        false
-                    }
-                }
-
-                gestures.addOnMapLongClickListener { point ->
-                    currentLongPress.value(point.latitude(), point.longitude())
-                    true
-                }
-
-                val mapboxMap = mapboxMap
-                mapboxMap.setCamera(
-                    CameraOptions.Builder()
-                        .center(Point.fromLngLat(location.longitude, location.latitude))
-                        .zoom(15.5)
-                        .pitch(DEFAULT_PITCH)
-                        .bearing(heading?.toDouble() ?: 0.0)
-                        .build()
-                )
-
-                mapboxMap.loadStyle(LocalMapStyleServer.threeDStyleJson()) {
-                    state.styleLoaded = true
-                    state.lastRecenterToken = recenterToken
-
-                    state.waypointManager = annotations.createPointAnnotationManager().apply {
-                        addClickListener { annotation ->
-                            val waypoint = state.waypointByAnnotationId[annotation.id]
-                            if (waypoint != null) {
-                                currentWaypointClick.value(waypoint)
-                                true
-                            } else {
-                                false
-                            }
+                    gestures.addOnMapClickListener { point ->
+                        if (currentPlacementEnabled.value) {
+                            currentMapClick.value(point.latitude(), point.longitude())
+                            true
+                        } else {
+                            false
                         }
                     }
 
-                    state.userManager = annotations.createPointAnnotationManager()
-                    updateUserAnnotation(context, state, location)
-                    updateWaypointAnnotations3D(context, state, waypoints)
-                    publish3DScale(mapView, state, currentScaleCallback.value, force = true)
+                    gestures.addOnMapLongClickListener { point ->
+                        currentLongPress.value(point.latitude(), point.longitude())
+                        true
+                    }
+
+                    val mapboxMap = mapboxMap
+
+                    // The SDK default maximum pitch is too restrictive for a useful
+                    // walking perspective. Allow the camera to move close to the horizon.
+                    mapboxMap.setBounds(
+                        CameraBoundsOptions.Builder()
+                            .minPitch(0.0)
+                            .maxPitch(MAX_PITCH)
+                            .build()
+                    )
+
+                    mapboxMap.setCamera(
+                        CameraOptions.Builder()
+                            .center(Point.fromLngLat(location.longitude, location.latitude))
+                            .zoom(15.5)
+                            .pitch(DEFAULT_PITCH)
+                            .bearing(heading?.toDouble() ?: 0.0)
+                            .build()
+                    )
+
+                    mapboxMap.loadStyle(LocalMapStyleServer.threeDStyleJson(topographic)) {
+                        state.styleLoaded = true
+                        state.lastRecenterToken = recenterToken
+
+                        state.waypointManager = annotations.createPointAnnotationManager().apply {
+                            addClickListener { annotation ->
+                                val waypoint = state.waypointByAnnotationId[annotation.id]
+                                if (waypoint != null) {
+                                    currentWaypointClick.value(waypoint)
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+
+                        state.userManager = annotations.createPointAnnotationManager()
+                        updateUserAnnotation(context, state, location)
+                        updateWaypointAnnotations3D(context, state, waypoints)
+                        publish3DScale(mapView, state, currentScaleCallback.value, force = true)
+                    }
                 }
+            },
+            update = {
+                if (!state.styleLoaded) return@AndroidView
+
+                updateUserAnnotation(context, state, location)
+                updateWaypointAnnotations3D(context, state, waypoints)
+
+                if (state.lastRecenterToken != recenterToken) {
+                    val current = mapView.mapboxMap.cameraState
+                    mapView.mapboxMap.setCamera(
+                        CameraOptions.Builder()
+                            .center(Point.fromLngLat(location.longitude, location.latitude))
+                            .zoom(maxOf(current.zoom, 16.0))
+                            .pitch(current.pitch.coerceIn(0.0, MAX_PITCH))
+                            .bearing(heading?.toDouble() ?: current.bearing)
+                            .build()
+                    )
+                    state.lastRecenterToken = recenterToken
+                }
+
+                publish3DScale(mapView, state, currentScaleCallback.value)
             }
-        },
-        update = {
-            if (!state.styleLoaded) return@AndroidView
+        )
 
-            updateUserAnnotation(context, state, location)
-            updateWaypointAnnotations3D(context, state, waypoints)
-
-            if (state.lastRecenterToken != recenterToken) {
-                val current = mapView.mapboxMap.cameraState
-                mapView.mapboxMap.setCamera(
-                    CameraOptions.Builder()
-                        .center(Point.fromLngLat(location.longitude, location.latitude))
-                        .zoom(maxOf(current.zoom, 16.0))
-                        .pitch(DEFAULT_PITCH)
-                        .bearing(heading?.toDouble() ?: current.bearing)
-                        .build()
-                )
-                state.lastRecenterToken = recenterToken
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            FilledTonalButton(
+                onClick = { set3DPitch(mapView, TOP_PITCH, keepZoom = true) },
+                modifier = Modifier.widthIn(min = 92.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text("Сверху", style = MaterialTheme.typography.labelSmall)
             }
 
-            publish3DScale(mapView, state, currentScaleCallback.value)
+            FilledTonalButton(
+                onClick = { set3DPitch(mapView, WALKING_PITCH, keepZoom = false) },
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .widthIn(min = 92.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text("Походный", style = MaterialTheme.typography.labelSmall)
+            }
         }
+    }
+}
+
+private fun set3DPitch(
+    mapView: MapView,
+    pitch: Double,
+    keepZoom: Boolean
+) {
+    val current = mapView.mapboxMap.cameraState
+    mapView.mapboxMap.setCamera(
+        CameraOptions.Builder()
+            .center(current.center)
+            .zoom(if (keepZoom) current.zoom else maxOf(current.zoom, 16.8))
+            .bearing(current.bearing)
+            .pitch(pitch.coerceIn(0.0, MAX_PITCH))
+            .build()
     )
 }
 
@@ -318,4 +384,7 @@ private fun create3DWaypointIcon(
     return bitmap
 }
 
+private const val TOP_PITCH = 0.0
 private const val DEFAULT_PITCH = 55.0
+private const val WALKING_PITCH = 78.0
+private const val MAX_PITCH = 85.0

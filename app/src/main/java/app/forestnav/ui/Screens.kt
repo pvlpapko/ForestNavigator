@@ -79,7 +79,8 @@ fun MapScreen(vm: AppViewModel) {
                 if (layer == MapLayer.SATELLITE ||
                     layer == MapLayer.TERRAIN ||
                     layer == MapLayer.SATELLITE_TERRAIN ||
-                    layer == MapLayer.THREE_D
+                    layer == MapLayer.THREE_D ||
+                    layer == MapLayer.THREE_D_TERRAIN
                 ) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
@@ -87,7 +88,8 @@ fun MapScreen(vm: AppViewModel) {
                                 MapLayer.SATELLITE -> "Mapbox Satellite • HD спутниковые и аэрофотоснимки"
                                 MapLayer.TERRAIN -> "Топографическая • Mapbox Outdoors: тропы, дороги, леса, вода, подписи и горизонтали"
                                 MapLayer.SATELLITE_TERRAIN -> "Mapbox Satellite Streets + Terrain RGB hillshade"
-                                MapLayer.THREE_D -> "3D • спутник + настоящий DEM-рельеф; карту можно наклонять и вращать"
+                                MapLayer.THREE_D -> "3D спутник • настоящий DEM-рельеф; доступен наклон до походного вида"
+                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • топографическая Outdoors + настоящий DEM-рельеф"
                                 else -> ""
                             }
                         } else {
@@ -95,7 +97,8 @@ fun MapScreen(vm: AppViewModel) {
                                 MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
                                 MapLayer.TERRAIN -> "Топографическая карта"
                                 MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
-                                MapLayer.THREE_D -> "3D-рельеф"
+                                MapLayer.THREE_D -> "3D спутник"
+                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф"
                                 else -> ""
                             }
                         },
@@ -161,19 +164,24 @@ fun MapScreen(vm: AppViewModel) {
                         pointPlacementMode = false
                     }
 
-                    if (layer == MapLayer.THREE_D) {
-                        Forest3DMapView(
-                            modifier = Modifier.fillMaxSize(),
-                            location = location!!,
-                            heading = heading,
-                            waypoints = waypoints,
-                            recenterToken = recenterToken,
-                            pointPlacementEnabled = pointPlacementMode,
-                            onMapClick = mapClick,
-                            onMapLongPress = mapClick,
-                            onWaypointClick = waypointClick,
-                            onMapScaleChanged = { mapScaleMeters = it }
-                        )
+                    if (layer == MapLayer.THREE_D ||
+                        layer == MapLayer.THREE_D_TERRAIN
+                    ) {
+                        key(layer) {
+                            Forest3DMapView(
+                                modifier = Modifier.fillMaxSize(),
+                                location = location!!,
+                                heading = heading,
+                                waypoints = waypoints,
+                                topographic = layer == MapLayer.THREE_D_TERRAIN,
+                                recenterToken = recenterToken,
+                                pointPlacementEnabled = pointPlacementMode,
+                                onMapClick = mapClick,
+                                onMapLongPress = mapClick,
+                                onWaypointClick = waypointClick,
+                                onMapScaleChanged = { mapScaleMeters = it }
+                            )
+                        }
                     } else {
                         ForestMapView(
                             modifier = Modifier.fillMaxSize(),
@@ -1021,7 +1029,8 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text(
             "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
                 "топографическая — Outdoors v12, спутник+рельеф — Satellite Streets + Terrain RGB, " +
-                "3D — спутник + настоящий DEM-рельеф. Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
+                "3D спутник — Satellite Streets + DEM, 3D+рельеф — Outdoors + DEM. " +
+                "В 3D доступен жест наклона до 85° и кнопка «Походный». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
                 "а недостающие тайлы подгружают только при наличии сети."
         )
         AssistChip(
