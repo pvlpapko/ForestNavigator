@@ -20,11 +20,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.gnss.SensorCapabilities
 import app.forestnav.map.MapLayer
+import app.forestnav.map.MapStyles
 import app.forestnav.service.TrackRecordingService
 import app.forestnav.service.TrackRecordingState
 import app.forestnav.util.Geo
@@ -35,9 +37,11 @@ fun MapScreen(vm: AppViewModel) {
     val location by vm.location.collectAsState()
     val satellites by vm.satellites.collectAsState()
     val waypoints by vm.waypoints.collectAsState()
+    val layer by vm.mapLayer.collectAsState()
     val precise by vm.preciseState.collectAsState()
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
+    val arcGisKeyVersion by vm.arcGisKeyVersion.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -56,8 +60,26 @@ fun MapScreen(vm: AppViewModel) {
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp, vertical = if (short) 4.dp else 8.dp)
             ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    MapLayer.entries.forEach { item ->
+                        FilterChip(
+                            selected = layer == item,
+                            onClick = { vm.setLayer(item) },
+                            label = { Text(item.title) },
+                            leadingIcon = if (layer == item) {
+                                { Icon(Icons.Default.Check, contentDescription = null) }
+                            } else null
+                        )
+                    }
+                }
+
                 Text(
-                    "3D • OpenAerialMap + VersaTiles + Mapterhorn • без токена и API-ключа",
+                    MapStyles.description(layer),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -119,19 +141,21 @@ fun MapScreen(vm: AppViewModel) {
                         pointPlacementMode = false
                     }
 
-                    Forest3DMapView(
-                        modifier = Modifier.fillMaxSize(),
-                        location = location!!,
-                        heading = heading,
-                        waypoints = waypoints,
-                        reliefOverlay = true,
-                        recenterToken = recenterToken,
-                        pointPlacementEnabled = pointPlacementMode,
-                        onMapClick = mapClick,
-                        onMapLongPress = mapClick,
-                        onWaypointClick = waypointClick,
-                        onMapScaleChanged = { mapScaleMeters = it }
-                    )
+                    key(layer, arcGisKeyVersion) {
+                        ForestMapView(
+                            modifier = Modifier.fillMaxSize(),
+                            location = location!!,
+                            heading = heading,
+                            waypoints = waypoints,
+                            layer = layer,
+                            recenterToken = recenterToken,
+                            pointPlacementEnabled = pointPlacementMode,
+                            onMapClick = mapClick,
+                            onMapLongPress = mapClick,
+                            onWaypointClick = waypointClick,
+                            onMapScaleChanged = { mapScaleMeters = it }
+                        )
+                    }
                 }
 
                 if (location != null) {
@@ -776,9 +800,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "Офлайн-пакет сохраняет глобальный спутниковый слой VersaTiles до z12 и Mapterhorn DEM до z15. " +
-                    "Если отдельные тайлы временно не ответили, приложение само продолжит докачивание. " +
-                    "Детальная съёмка OpenAerialMap подставляется онлайн там, где она существует, и кэшируется при просмотре."
+                    "ArcGIS автоматически разбивается приложением на несколько TPKX-пакетов, чтобы большие области не упирались в лимит одной операции экспорта. " +
+                    "Для спутника сохраняется HD-детализация по всей выбранной области; уже готовые пакеты при докачивании не загружаются повторно."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -798,8 +821,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             if (radius >= 50.0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Большая область: полный 3D-рельеф до z15 может занять много времени и места. " +
-                        "Уже скачанные тайлы сохраняются и повторно не загружаются.",
+                    "Большая область в HD может занимать много места и скачиваться долго. " +
+                        "Качество к краям области не снижается: область автоматически делится на безопасные части.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -867,9 +890,9 @@ private fun OfflineScreen(vm: AppViewModel) {
                                         Text(
                                             when {
                                                 p.missingResources > 0L ->
-                                                    "Область уже работает офлайн. Осталось докачать: ${p.missingResources} тайлов; приложение продолжит автоматически."
+                                                    "Область уже работает офлайн. Осталось докачать: ${p.missingResources} пакетов; приложение продолжит автоматически."
                                                 p.skippedResources > 0L ->
-                                                    "Готово. Недоступных у провайдера тайлов пропущено: ${p.skippedResources}."
+                                                    "Готово. Недоступных у провайдера пакетов пропущено: ${p.skippedResources}."
                                                 else ->
                                                     "Готово — область доступна офлайн."
                                             },
@@ -895,7 +918,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                                             )
                                             if (p.needsRetry && p.missingResources > 0L) {
                                                 Text(
-                                                    "Автодокачивание: осталось ${p.missingResources} тайлов. Приложение продолжит само.",
+                                                    "Автодокачивание: осталось ${p.missingResources} пакетов. Приложение продолжит само.",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
@@ -956,9 +979,10 @@ private fun OfflineScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun SettingsScreen(@Suppress("UNUSED_PARAMETER") vm: AppViewModel) {
+private fun SettingsScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
+    var arcGisKey by remember { mutableStateOf(vm.arcGisApiKey()) }
 
     Column(
         Modifier
@@ -969,17 +993,35 @@ private fun SettingsScreen(@Suppress("UNUSED_PARAMETER") vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Единственный режим карты — 3D. Базовый спутник: VersaTiles; при наличии детальной открытой съёмки поверх него используется OpenAerialMap. " +
-                "Объёмный рельеф: Mapterhorn Terrarium DEM. Токены и API-ключи картографических сервисов не нужны. " +
-                "Доступны свободное вращение, наклон до 85° и кнопки «Походный»/«Горизонт»."
+            "ArcGIS: Navigation для обычной карты, World Imagery для HD-спутника, " +
+                "Streets Relief для рельефа и World Imagery с hillshade/подписями для комбинированного режима. " +
+                "3D-режимы полностью удалены."
         )
         AssistChip(
             onClick = {},
-            label = { Text("OAM + VersaTiles + Mapterhorn • без токенов") },
+            label = { Text("ArcGIS • 2D + офлайн TPKX") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
-        HorizontalDivider()
+        OutlinedTextField(
+            value = arcGisKey,
+            onValueChange = { arcGisKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("ArcGIS API key") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true
+        )
+        Button(
+            enabled = arcGisKey.isNotBlank(),
+            onClick = { vm.updateArcGisApiKey(arcGisKey) }
+        ) {
+            Text("Сохранить ключ")
+        }
+        Text(
+            "Ключ хранится только в настройках приложения на этом устройстве. После сохранения карта перезагружается.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         HorizontalDivider()
 

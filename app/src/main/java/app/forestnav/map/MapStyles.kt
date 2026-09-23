@@ -1,51 +1,58 @@
 package app.forestnav.map
 
-import app.forestnav.data.SettingsStore
+import com.arcgismaps.mapping.BasemapStyle
 
 enum class MapLayer(val title: String) {
     MAP("Карта"),
     SATELLITE("Спутник"),
     RELIEF("Рельеф"),
-    SATELLITE_TERRAIN("Спутник+рельеф"),
-    THREE_D("3D спутник"),
-    THREE_D_TERRAIN("3D"),
-    CUSTOM("Своя карта")
+    SATELLITE_TERRAIN("Спутник+рельеф")
 }
 
+data class ArcGisOfflineSource(
+    val id: String,
+    val url: String,
+    val role: OfflineLayerRole,
+    val opacity: Float = 1f
+)
+
+enum class OfflineLayerRole { BASE, HILLSHADE, REFERENCE }
+
 object MapStyles {
-    private const val JSON_PREFIX = "json:"
-
-    fun url(
-        layer: MapLayer,
-        settings: SettingsStore,
-        online: Boolean = true
-    ): String? {
-        @Suppress("UNUSED_VARIABLE")
-        val networkAvailable = online
-
-        if (layer == MapLayer.CUSTOM) {
-            return settings.customStyleUrl.takeIf { it.isNotBlank() }
-        }
-
-        // Normal 2D modes always use the localhost proxy. It prefers downloaded
-        // regions/cache first and only fetches missing public EOX/AWS tiles online.
-        return when (layer) {
-            MapLayer.MAP -> LocalMapStyleServer.mapUrl()
-            MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
-            MapLayer.RELIEF -> LocalMapStyleServer.reliefUrl()
-            MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()
-            MapLayer.THREE_D,
-            MapLayer.THREE_D_TERRAIN,
-            MapLayer.CUSTOM -> null
-        }
+    fun basemapStyle(layer: MapLayer): BasemapStyle = when (layer) {
+        MapLayer.MAP -> BasemapStyle.ArcGISNavigation
+        MapLayer.SATELLITE -> BasemapStyle.ArcGISImageryStandard
+        MapLayer.RELIEF -> BasemapStyle.ArcGISStreetsRelief
+        MapLayer.SATELLITE_TERRAIN -> BasemapStyle.ArcGISImagery
     }
 
-    fun isJsonStyle(value: String): Boolean =
-        value.startsWith(JSON_PREFIX)
+    fun description(layer: MapLayer): String = when (layer) {
+        MapLayer.MAP -> "ArcGIS Navigation • дороги, подписи, здания и объекты"
+        MapLayer.SATELLITE -> "ArcGIS World Imagery • HD спутник/аэрофото"
+        MapLayer.RELIEF -> "ArcGIS Streets Relief • дороги, тропы, подписи и рельеф"
+        MapLayer.SATELLITE_TERRAIN -> "World Imagery + hillshade + подписи"
+    }
 
-    fun jsonPayload(value: String): String =
-        value.removePrefix(JSON_PREFIX)
+    fun offlineSources(layer: MapLayer): List<ArcGisOfflineSource> = when (layer) {
+        MapLayer.MAP -> listOf(ArcGisOfflineSource("topo", TOPO_EXPORT, OfflineLayerRole.BASE))
+        MapLayer.SATELLITE -> listOf(ArcGisOfflineSource("imagery", IMAGERY_EXPORT, OfflineLayerRole.BASE))
+        MapLayer.RELIEF -> listOf(ArcGisOfflineSource("topo", TOPO_EXPORT, OfflineLayerRole.BASE))
+        MapLayer.SATELLITE_TERRAIN -> listOf(
+            ArcGisOfflineSource("imagery", IMAGERY_EXPORT, OfflineLayerRole.BASE),
+            ArcGisOfflineSource("hillshade", HILLSHADE_EXPORT, OfflineLayerRole.HILLSHADE, 0.25f),
+            ArcGisOfflineSource("reference", REFERENCE_EXPORT, OfflineLayerRole.REFERENCE)
+        )
+    }
 
-    fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
-        layer != MapLayer.CUSTOM || settings.customStyleUrl.isNotBlank()
+    const val HILLSHADE_ONLINE =
+        "https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer"
+
+    private const val IMAGERY_EXPORT =
+        "https://tiledbasemaps.arcgis.com/arcgis/rest/services/World_Imagery/MapServer"
+    private const val TOPO_EXPORT =
+        "https://tiledbasemaps.arcgis.com/arcgis/rest/services/World_Topo_Map/MapServer"
+    private const val HILLSHADE_EXPORT =
+        "https://tiledbasemaps.arcgis.com/arcgis/rest/services/Elevation/World_Hillshade/MapServer"
+    private const val REFERENCE_EXPORT =
+        "https://tiledbasemaps.arcgis.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer"
 }

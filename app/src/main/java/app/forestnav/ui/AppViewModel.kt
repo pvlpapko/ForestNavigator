@@ -14,7 +14,6 @@ import app.forestnav.gnss.CompassEngine
 import app.forestnav.gnss.GnssEngine
 import app.forestnav.gnss.PreciseFixCollector
 import app.forestnav.map.MapLayer
-import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineMapManager
 import app.forestnav.service.OfflineMapDownloadService
 import app.forestnav.service.OfflineMapDownloadState
@@ -64,8 +63,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _navigationTarget = MutableStateFlow<Waypoint?>(null)
     val navigationTarget = _navigationTarget.asStateFlow()
 
-    private val _mapLayer = MutableStateFlow(MapLayer.THREE_D_TERRAIN)
+    private val _mapLayer = MutableStateFlow(MapLayer.MAP)
     val mapLayer = _mapLayer.asStateFlow()
+
+    private val _arcGisKeyVersion = MutableStateFlow(0)
+    val arcGisKeyVersion = _arcGisKeyVersion.asStateFlow()
 
     data class PreciseState(
         val active: Boolean = false,
@@ -115,11 +117,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLayer(layer: MapLayer) { _mapLayer.value = layer }
 
-    fun styleUrl(online: Boolean): String? =
-        MapStyles.url(_mapLayer.value, app.settings, online)
+    fun arcGisApiKey(): String = app.settings.arcGisApiKey
 
-    fun highDetailMapsEnabled(): Boolean =
-        MapStyles.highDetailEnabled(_mapLayer.value, app.settings)
+    fun updateArcGisApiKey(value: String) {
+        app.settings.arcGisApiKey = value
+        app.applyArcGisApiKey(value)
+        _arcGisKeyVersion.value = _arcGisKeyVersion.value + 1
+    }
 
     fun setNavigationTarget(w: Waypoint?) { _navigationTarget.value = w }
 
@@ -204,17 +208,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateCustomStyle(value: String) { app.settings.customStyleUrl = value }
-    fun customStyle(): String = app.settings.customStyleUrl
-
     fun downloadCurrentRegion(radiusKm: Double) {
         val loc: Location = location.value ?: return
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-        // The 3D offline pack stores the complete native VersaTiles
-        // satellite range (through z12) and Mapterhorn DEM range (through z15).
-        // OfflineMapManager clamps each source to its own actual maximum.
-        val maxZoom = 15.0
+        // HD detail is kept across the entire selected area. ArcGIS export
+        // requests are split into smaller TPKX packages so the provider's
+        // per-request tile cap does not force lower quality at large radii.
+        val maxZoom = when (layer) {
+            MapLayer.SATELLITE,
+            MapLayer.SATELLITE_TERRAIN -> 18.0
+            MapLayer.MAP,
+            MapLayer.RELIEF -> 17.0
+        }
         val minZoom = when {
             radiusKm >= 100.0 -> 7.0
             radiusKm >= 50.0 -> 8.0

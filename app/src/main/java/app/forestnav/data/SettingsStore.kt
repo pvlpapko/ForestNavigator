@@ -23,10 +23,10 @@ class SettingsStore(context: Context) {
         )
     }
 
-    var customStyleUrl: String
-        get() = prefs.getString("custom_style_url", "").orEmpty()
+    var arcGisApiKey: String
+        get() = prefs.getString("arcgis_api_key", "").orEmpty()
         set(value) = prefs.edit()
-            .putString("custom_style_url", value.trim())
+            .putString("arcgis_api_key", value.trim())
             .apply()
 
     var trackingMode: String
