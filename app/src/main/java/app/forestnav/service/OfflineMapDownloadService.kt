@@ -137,8 +137,11 @@ class OfflineMapDownloadService : Service() {
                             if (chunk.file.exists()) chunk.file.delete()
                             chunk.file.parentFile?.mkdirs()
                             val area = Envelope(
-                                chunk.west, chunk.south, chunk.east, chunk.north,
-                                SpatialReference.wgs84()
+                                xMin = chunk.west,
+                                yMin = chunk.south,
+                                xMax = chunk.east,
+                                yMax = chunk.north,
+                                spatialReference = SpatialReference.wgs84()
                             )
                             val task = ExportTileCacheTask(chunk.source.url)
                             val params = task.createDefaultExportTileCacheParameters(
