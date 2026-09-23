@@ -16,10 +16,13 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 object LocalMapStyleServer {
+    class PermanentTileException(message: String) : IOException(message)
+
     private val started = AtomicBoolean(false)
     private lateinit var cacheRoot: File
     private lateinit var offlineRoot: File
@@ -29,6 +32,7 @@ object LocalMapStyleServer {
     private val nextAt = ConcurrentHashMap<String, Long>()
     private val blockedUntil = ConcurrentHashMap<String, Long>()
     private val locks = ConcurrentHashMap<String, Any>()
+    private val networkSlots = Semaphore(20, true)
 
     private val clientExecutor = ThreadPoolExecutor(
         8, 8, 30L, TimeUnit.SECONDS, ArrayBlockingQueue(256),
@@ -162,42 +166,69 @@ object LocalMapStyleServer {
     private fun fetch(sourceId: String, z: Int, x: Int, y: Int): ByteArray {
         val source = MapboxProvider.sourceById(sourceId)
         var last = "Mapbox tile error"
+
         repeat(MAX_ATTEMPTS) { attempt ->
             awaitSlot(source)
-            val c = URL(MapboxProvider.tileUrl(source, z, x, y)).openConnection() as HttpURLConnection
-            c.connectTimeout = 10_000
-            c.readTimeout = 25_000
-            c.instanceFollowRedirects = true
-            c.setRequestProperty("User-Agent", "ForestNavigator/1.2 Android")
-            c.setRequestProperty("Accept", "image/*,*/*;q=0.8")
+            networkSlots.acquire()
+
+            var c: HttpURLConnection? = null
             try {
+                c = URL(MapboxProvider.tileUrl(source, z, x, y)).openConnection() as HttpURLConnection
+                c.connectTimeout = 8_000
+                c.readTimeout = 12_000
+                c.instanceFollowRedirects = true
+                c.useCaches = true
+                c.setRequestProperty("User-Agent", "ForestNavigator/1.2 Android")
+                c.setRequestProperty("Accept", "image/*,*/*;q=0.8")
+
                 val status = c.responseCode
                 if (status in 200..299) {
-                    val bytes = c.inputStream.use { it.readBytes() }
+                    val bytes = c.inputStream.buffered().use { it.readBytes() }
                     if (bytes.size < 128) throw IOException("Mapbox returned empty tile")
                     blockedUntil.remove(source.id)
                     return bytes
                 }
-                if (status == 401 || status == 403) {
-                    throw IOException("Mapbox token rejected: HTTP $status")
+
+                when (status) {
+                    401, 403 -> throw IOException("Mapbox token rejected: HTTP $status")
+                    400, 404, 410, 422 ->
+                        throw PermanentTileException("Mapbox tile unavailable: HTTP $status")
+                    429 -> {
+                        last = "Mapbox HTTP 429"
+                        val delay = c.getHeaderField("Retry-After")
+                            ?.toLongOrNull()
+                            ?.times(1000L)
+                            ?: retryDelay(attempt)
+                        blockedUntil[source.id] =
+                            System.currentTimeMillis() + delay.coerceAtMost(30_000L)
+                    }
+                    in 500..599 -> {
+                        last = "Mapbox HTTP $status"
+                        blockedUntil[source.id] =
+                            System.currentTimeMillis() + retryDelay(attempt)
+                    }
+                    else -> {
+                        last = "Mapbox HTTP $status"
+                    }
                 }
-                last = "Mapbox HTTP $status"
-                if (status == 429 || status in 500..599) {
-                    val delay = c.getHeaderField("Retry-After")?.toLongOrNull()?.times(1000L)
-                        ?: retryDelay(attempt)
-                    blockedUntil[source.id] = System.currentTimeMillis() + delay.coerceAtMost(30_000L)
-                }
+            } catch (e: PermanentTileException) {
+                throw e
             } catch (e: SocketTimeoutException) {
                 last = "Mapbox timeout"
             } catch (e: IOException) {
                 last = e.message ?: "Mapbox network error"
                 if (last.contains("token rejected")) throw e
             } finally {
-                runCatching { c.errorStream?.close() }
-                c.disconnect()
+                runCatching { c?.errorStream?.close() }
+                c?.disconnect()
+                networkSlots.release()
             }
-            if (attempt + 1 < MAX_ATTEMPTS) sleepInterruptibly(retryDelay(attempt))
+
+            if (attempt + 1 < MAX_ATTEMPTS) {
+                sleepInterruptibly(retryDelay(attempt))
+            }
         }
+
         throw IOException(last)
     }
 
@@ -277,5 +308,5 @@ object LocalMapStyleServer {
 
     private const val CACHE_DIR = "map_cache_mapbox_v1"
     private const val OFFLINE_DIR = "offline_regions_mapbox_v1"
-    private const val MAX_ATTEMPTS = 5
+    private const val MAX_ATTEMPTS = 2
 }

@@ -12,11 +12,11 @@ internal enum class MapboxSource(
     val tileSize: Int,
     val minRequestIntervalMs: Long
 ) {
-    STREETS("streets", "png", "image/png", 22, 512, 35L),
-    SATELLITE("satellite", "jpg", "image/jpeg", 22, 256, 20L),
-    OUTDOORS("outdoors", "png", "image/png", 22, 512, 35L),
-    SATELLITE_STREETS("satellite_streets", "jpeg", "image/jpeg", 22, 512, 35L),
-    TERRAIN_RGB("terrain_rgb", "png", "image/png", 15, 256, 20L)
+    STREETS("streets", "png", "image/png", 22, 512, 12L),
+    SATELLITE("satellite", "jpg", "image/jpeg", 22, 256, 5L),
+    OUTDOORS("outdoors", "png", "image/png", 22, 512, 12L),
+    SATELLITE_STREETS("satellite_streets", "jpeg", "image/jpeg", 22, 512, 12L),
+    TERRAIN_RGB("terrain_rgb", "png", "image/png", 15, 256, 5L)
 }
 
 internal object MapboxProvider {

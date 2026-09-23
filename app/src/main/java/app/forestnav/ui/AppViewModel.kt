@@ -79,7 +79,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var preciseJob: Job? = null
     private var foregroundActive = false
 
-    val download = OfflineMapDownloadState.progress
+    val downloads = OfflineMapDownloadState.progress
 
     private val _offlineRegions = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     val offlineRegions = _offlineRegions.asStateFlow()
@@ -90,10 +90,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshWaypoints()
         refreshOfflineRegions()
         viewModelScope.launch {
-            download.collectLatest { progress ->
-                if (progress?.complete == true ||
-                    progress?.cancelled == true ||
-                    progress?.error != null
+            downloads.collectLatest { states ->
+                if (states.values.any {
+                        it.complete || it.cancelled || it.error != null
+                    }
                 ) {
                     refreshOfflineRegions()
                 }
@@ -239,8 +239,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun cancelDownload() {
-        OfflineMapDownloadService.cancel(app)
+    fun cancelDownload(regionId: Long) {
+        OfflineMapDownloadService.cancel(app, regionId)
     }
 
     fun refreshOfflineRegions() {

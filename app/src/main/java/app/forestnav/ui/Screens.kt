@@ -801,7 +801,7 @@ fun MoreScreen(vm: AppViewModel) {
 @Composable
 private fun OfflineScreen(vm: AppViewModel) {
     val location by vm.location.collectAsState()
-    val progress by vm.download.collectAsState()
+    val downloads by vm.downloads.collectAsState()
     val regions by vm.offlineRegions.collectAsState()
     val layer by vm.mapLayer.collectAsState()
     var radius by remember { mutableDoubleStateOf(5.0) }
@@ -815,8 +815,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "Загрузка продолжится в фоне при свёрнутом приложении; прогресс виден в уведомлении. " +
-                    "После загрузки интернет для этой области не нужен."
+                    "Можно запускать несколько областей подряд: до трёх скачиваются одновременно, остальные ждут свободный слот. " +
+                    "Загрузка продолжится в фоне; уже скачанная часть сохраняется и используется при повторном запуске."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -844,63 +844,114 @@ private fun OfflineScreen(vm: AppViewModel) {
             }
 
             Spacer(Modifier.height(10.dp))
-            if (progress?.active == true) {
-                Button(
-                    onClick = vm::cancelDownload,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError
-                    )
-                ) {
-                    Icon(Icons.Default.Stop, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Пауза")
-                }
-            } else {
-                Button(
-                    enabled = location != null,
-                    onClick = { vm.downloadCurrentRegion(radius) }
-                ) {
-                    Icon(Icons.Default.Download, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Скачать")
-                }
+            Button(
+                enabled = location != null,
+                onClick = { vm.downloadCurrentRegion(radius) }
+            ) {
+                Icon(Icons.Default.Download, null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (downloads.values.any { it.active }) "Добавить загрузку" else "Скачать")
             }
 
-            progress?.let { p ->
-                Spacer(Modifier.height(10.dp))
-                p.error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error)
-                }
-                if (p.cancelled) {
-                    Text(
-                        "Загрузка приостановлена. Повторный запуск этой же области продолжит с уже скачанных тайлов.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            if (downloads.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("Текущие загрузки", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
 
-                if (p.error == null && !p.cancelled) {
-                    val ratio = if (p.requiredResources > 0) {
-                        p.completedResources.toFloat() / p.requiredResources
-                    } else 0f
+                downloads.values
+                    .sortedByDescending { it.regionId ?: 0L }
+                    .forEach { p ->
+                        OutlinedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    p.name.ifBlank {
+                                        p.layerTitle.ifBlank { "Офлайн-карта" }
+                                    },
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
 
-                    LinearProgressIndicator(
-                        progress = { ratio.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text(
-                        "Ресурсов: ${p.completedResources}/" +
-                            (if (p.requiredResources > 0) p.requiredResources.toString() else "…") +
-                            " • ${p.bytes / (1024 * 1024)} МБ"
-                    )
-                    if (p.complete) {
-                        Text(
-                            "Готово — область доступна офлайн.",
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                                when {
+                                    p.error != null -> {
+                                        Text(
+                                            p.error,
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        Text(
+                                            "Скачанная часть сохранена. Повторный запуск этой же области продолжит загрузку.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    p.cancelled -> {
+                                        Text(
+                                            "Загрузка приостановлена. Скачанная часть сохранена.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    p.complete -> {
+                                        Text(
+                                            if (p.skippedResources > 0L) {
+                                                "Готово. Недоступных тайлов пропущено: ${p.skippedResources}."
+                                            } else {
+                                                "Готово — область доступна офлайн."
+                                            },
+                                            color = MaterialTheme.colorScheme.primary,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+
+                                    else -> {
+                                        val ratio = if (p.requiredResources > 0L) {
+                                            p.completedResources.toFloat() / p.requiredResources
+                                        } else 0f
+
+                                        if (p.requiredResources > 0L) {
+                                            LinearProgressIndicator(
+                                                progress = { ratio.coerceIn(0f, 1f) },
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            Text(
+                                                "Ресурсов: ${p.completedResources}/${p.requiredResources} • " +
+                                                    "${p.bytes / (1024 * 1024)} МБ",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        } else {
+                                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                            Text(
+                                                "Подготовка области или ожидание свободного слота…",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+
+                                        if (p.active) {
+                                            p.regionId?.let { id ->
+                                                TextButton(onClick = { vm.cancelDownload(id) }) {
+                                                    Icon(Icons.Default.Pause, null)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Пауза")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
             }
+
         }
 
         item { HorizontalDivider() }
