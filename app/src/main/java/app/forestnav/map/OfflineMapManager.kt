@@ -12,6 +12,7 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
 import kotlin.math.asinh
 import kotlin.math.cos
@@ -28,6 +29,8 @@ class OfflineMapManager(private val context: Context) {
         val bytes: Long = 0,
         val skippedResources: Long = 0,
         val missingResources: Long = 0,
+        val needsRetry: Boolean = false,
+        val fatal: Boolean = false,
         val complete: Boolean = false,
         val active: Boolean = false,
         val cancelled: Boolean = false,
@@ -207,6 +210,7 @@ class OfflineMapManager(private val context: Context) {
                     }
 
                     val failures = Collections.synchronizedList(mutableListOf<DownloadTask>())
+                    val fatalError = AtomicReference<Throwable?>(null)
                     val pool = Executors.newFixedThreadPool(workerCountForRound(round)) { runnable ->
                         Thread(runnable, "forest-offline-tile").apply { isDaemon = true }
                     }
@@ -242,6 +246,8 @@ class OfflineMapManager(private val context: Context) {
                             } catch (_: LocalMapStyleServer.PermanentTileException) {
                                 skipped.incrementAndGet()
                                 completed.incrementAndGet()
+                            } catch (fatal: LocalMapStyleServer.FatalTileException) {
+                                fatalError.compareAndSet(null, fatal)
                             } catch (_: InterruptedException) {
                                 // Cancellation is handled by the coordinator loop.
                             } catch (_: Throwable) {
@@ -274,19 +280,32 @@ class OfflineMapManager(private val context: Context) {
                     pool.shutdown()
                     pool.awaitTermination(2L, TimeUnit.SECONDS)
                     handle.workerPool = null
+
+                    fatalError.get()?.let { throw it }
                     remaining = failures.toList()
                 }
 
                 checkNotCancelled(handle)
 
-                // A few transiently unavailable tiles must never invalidate the whole area.
-                // Finalize the region so all downloaded tiles are immediately usable, remember
-                // the missing count, and keep the job metadata so a later launch can repair only
-                // the missing files.
-                val missingResources = remaining.size.toLong()
-                if (missingResources > 0L) {
-                    skipped.addAndGet(missingResources)
-                    completed.addAndGet(missingResources)
+                // Never report a transiently incomplete region as finished. Keep it in
+                // .partial form (already usable by the local tile proxy) and ask the
+                // foreground service to automatically repair only the missing tiles.
+                if (remaining.isNotEmpty()) {
+                    onProgress(
+                        DownloadProgress(
+                            regionId = actualRegionId,
+                            name = name,
+                            layerTitle = layer.title,
+                            completedResources = completed.get(),
+                            requiredResources = required,
+                            bytes = bytes.get(),
+                            skippedResources = skipped.get(),
+                            missingResources = remaining.size.toLong(),
+                            needsRetry = true,
+                            active = true
+                        )
+                    )
+                    return@submit
                 }
 
                 if (finalDir.exists()) finalDir.deleteRecursively()
@@ -294,12 +313,37 @@ class OfflineMapManager(private val context: Context) {
                     partial.copyRecursively(finalDir, overwrite = true)
                     partial.deleteRecursively()
                 }
+                File(finalDir, INCOMPLETE_MARKER).delete()
 
-                val incompleteMarker = File(finalDir, INCOMPLETE_MARKER)
-                if (missingResources > 0L) {
-                    incompleteMarker.writeText(missingResources.toString(), Charsets.UTF_8)
-                } else {
-                    incompleteMarker.delete()
+                // Final integrity pass: every downloadable resource must exist before
+                // the region is marked complete. Provider-declared 404/410 resources
+                // are the only exception and are counted in skippedResources.
+                val validDownloaded = countValidDownloaded(finalDir, allTasks)
+                val expectedDownloaded = required - skipped.get()
+                if (validDownloaded < expectedDownloaded) {
+                    // A file disappeared or an atomic move failed. Re-open the final
+                    // directory as partial so the next automatic repair pass fixes it.
+                    val repair = File(root, ".partial-$actualRegionId")
+                    if (repair.exists()) repair.deleteRecursively()
+                    if (!finalDir.renameTo(repair)) {
+                        finalDir.copyRecursively(repair, overwrite = true)
+                        finalDir.deleteRecursively()
+                    }
+                    onProgress(
+                        DownloadProgress(
+                            regionId = actualRegionId,
+                            name = name,
+                            layerTitle = layer.title,
+                            completedResources = validDownloaded + skipped.get(),
+                            requiredResources = required,
+                            bytes = bytes.get(),
+                            skippedResources = skipped.get(),
+                            missingResources = (expectedDownloaded - validDownloaded).coerceAtLeast(0L),
+                            needsRetry = true,
+                            active = true
+                        )
+                    )
+                    return@submit
                 }
 
                 onProgress(
@@ -307,11 +351,11 @@ class OfflineMapManager(private val context: Context) {
                         regionId = actualRegionId,
                         name = name,
                         layerTitle = layer.title,
-                        completedResources = completed.get(),
+                        completedResources = required,
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
-                        missingResources = missingResources,
+                        missingResources = 0,
                         complete = true
                     )
                 )
@@ -341,6 +385,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
+                        fatal = t is LocalMapStyleServer.FatalTileException,
                         error = t.message ?: "Ошибка загрузки"
                     )
                 )
@@ -426,6 +471,20 @@ class OfflineMapManager(private val context: Context) {
             onError(it.message ?: "Не удалось удалить область")
         }
     }
+
+    private fun countValidDownloaded(
+        regionDir: File,
+        tasks: List<DownloadTask>
+    ): Long = tasks.count { task ->
+        val file = LocalMapStyleServer.tileFile(
+            regionDir,
+            task.source,
+            task.tile.z,
+            task.tile.x,
+            task.tile.y
+        )
+        file.isFile && file.length() >= MIN_VALID_TILE_BYTES
+    }.toLong()
 
     private fun writePartialMetadata(
         partial: File,

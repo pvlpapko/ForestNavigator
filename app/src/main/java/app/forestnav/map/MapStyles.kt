@@ -5,7 +5,6 @@ import app.forestnav.data.SettingsStore
 enum class MapLayer(val title: String) {
     MAP("Карта"),
     SATELLITE("Спутник"),
-    TERRAIN("Топографическая"),
     RELIEF("Рельеф"),
     SATELLITE_TERRAIN("Спутник+рельеф"),
     THREE_D("3D спутник"),
@@ -46,7 +45,6 @@ object MapStyles {
         return when (layer) {
             MapLayer.MAP -> LocalMapStyleServer.mapUrl()
             MapLayer.SATELLITE -> LocalMapStyleServer.satelliteUrl()
-            MapLayer.TERRAIN -> LocalMapStyleServer.terrainUrl()
             MapLayer.RELIEF -> LocalMapStyleServer.reliefUrl()
             MapLayer.SATELLITE_TERRAIN -> LocalMapStyleServer.combinedUrl()
             MapLayer.THREE_D -> null
@@ -93,12 +91,6 @@ object MapStyles {
           ]
         }
     """.trimIndent()
-
-    private fun terrainStyle(): String =
-        singleRasterStyle(
-            name = "Mapbox Outdoors Topographic",
-            source = MapboxSource.OUTDOORS
-        )
 
     private fun satelliteTerrainStyle(): String {
         val base = MapboxSource.SATELLITE_STREETS

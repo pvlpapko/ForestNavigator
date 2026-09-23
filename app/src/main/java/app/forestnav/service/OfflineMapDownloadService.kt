@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.location.Location
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -46,6 +48,9 @@ object OfflineMapDownloadState {
 class OfflineMapDownloadService : Service() {
     private lateinit var manager: OfflineMapManager
     private val runningJobs = ConcurrentHashMap<Long, JobSpec>()
+    private val retryHandler = Handler(Looper.getMainLooper())
+    private val retryRunnables = ConcurrentHashMap<Long, Runnable>()
+    private val retryAttempts = ConcurrentHashMap<Long, Int>()
     private var foregroundStarted = false
 
     private data class JobSpec(
@@ -123,6 +128,8 @@ class OfflineMapDownloadService : Service() {
             when {
                 progress.complete -> finishSuccess(spec, progress)
                 progress.cancelled -> finishCancelled(spec)
+                progress.needsRetry -> scheduleRepair(spec, progress)
+                progress.error != null && !progress.fatal -> scheduleRepair(spec, progress)
                 progress.error != null -> finishError(spec, progress)
                 else -> updateAggregateNotification()
             }
@@ -156,31 +163,55 @@ class OfflineMapDownloadService : Service() {
             previous.maxZoom == requested.maxZoom
     }
 
+    private fun scheduleRepair(
+        spec: JobSpec,
+        progress: OfflineMapManager.DownloadProgress
+    ) {
+        if (runningJobs.remove(spec.regionId) == null) return
+
+        saveJob(spec, active = true)
+        val attempt = (retryAttempts[spec.regionId] ?: 0) + 1
+        retryAttempts[spec.regionId] = attempt
+        val delayMs = retryDelayMs(attempt)
+
+        OfflineMapDownloadState.publish(
+            progress.copy(
+                active = true,
+                needsRetry = true,
+                fatal = false,
+                error = null
+            )
+        )
+
+        retryRunnables.remove(spec.regionId)?.let(retryHandler::removeCallbacks)
+        val runnable = Runnable {
+            retryRunnables.remove(spec.regionId)
+            val stillActive = loadActiveJobs().any { it.regionId == spec.regionId }
+            if (stillActive) startJob(spec)
+            else stopIfIdle()
+        }
+        retryRunnables[spec.regionId] = runnable
+        retryHandler.postDelayed(runnable, delayMs)
+
+        ensureForeground()
+        updateAggregateNotification()
+    }
+
     private fun finishSuccess(
         spec: JobSpec,
         progress: OfflineMapManager.DownloadProgress
     ) {
         if (runningJobs.remove(spec.regionId) == null) return
-        if (progress.missingResources > 0L) {
-            saveJob(spec, active = false)
-        } else {
-            clearJob(spec.regionId)
-        }
+        retryRunnables.remove(spec.regionId)?.let(retryHandler::removeCallbacks)
+        retryAttempts.remove(spec.regionId)
+        clearJob(spec.regionId)
 
-        val skippedText = when {
-            progress.missingResources > 0L ->
-                " • осталось докачать ${progress.missingResources}"
-            progress.skippedResources > 0L ->
-                " • недоступно ${progress.skippedResources}"
-            else -> ""
-        }
+        val skippedText = if (progress.skippedResources > 0L) {
+            " • у провайдера отсутствует ${progress.skippedResources}"
+        } else ""
         notifyTerminal(
             id = terminalNotificationId(spec.regionId),
-            title = if (progress.missingResources > 0L) {
-                "Карта доступна офлайн"
-            } else {
-                "Карта скачана"
-            },
+            title = "Карта скачана полностью",
             text = "${spec.layer.title}: ${progress.completedResources} тайлов$skippedText"
         )
         updateAggregateNotification()
@@ -210,14 +241,36 @@ class OfflineMapDownloadService : Service() {
     }
 
     private fun cancelByUser(regionId: Long) {
-        val spec = runningJobs[regionId]
+        retryRunnables.remove(regionId)?.let(retryHandler::removeCallbacks)
+        retryAttempts.remove(regionId)
+
+        val spec = runningJobs[regionId] ?: loadJob(regionId)
         if (spec != null) saveJob(spec, active = false)
+
         manager.cancelDownload(regionId, deletePartial = false)
+        if (runningJobs[regionId] == null) {
+            OfflineMapDownloadState.publish(
+                OfflineMapManager.DownloadProgress(
+                    regionId = regionId,
+                    name = spec?.name.orEmpty(),
+                    layerTitle = spec?.layer?.title.orEmpty(),
+                    cancelled = true
+                )
+            )
+            stopIfIdle()
+        }
     }
 
     private fun cancelAllByUser() {
+        retryRunnables.values.forEach(retryHandler::removeCallbacks)
+        retryRunnables.clear()
+        retryAttempts.clear()
+
+        loadActiveJobs().forEach { saveJob(it, active = false) }
         runningJobs.values.forEach { saveJob(it, active = false) }
         manager.cancelDownload(regionId = null, deletePartial = false)
+
+        if (runningJobs.isEmpty()) stopIfIdle()
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
@@ -241,6 +294,9 @@ class OfflineMapDownloadService : Service() {
     }
 
     override fun onDestroy() {
+        retryRunnables.values.forEach(retryHandler::removeCallbacks)
+        retryRunnables.clear()
+
         if (runningJobs.isNotEmpty()) {
             runningJobs.values.forEach { saveJob(it, active = true) }
             manager.cancelDownload(regionId = null, deletePartial = false)
@@ -343,7 +399,7 @@ class OfflineMapDownloadService : Service() {
     }
 
     private fun stopIfIdle() {
-        if (runningJobs.isNotEmpty()) return
+        if (runningJobs.isNotEmpty() || retryRunnables.isNotEmpty()) return
         if (foregroundStarted) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             foregroundStarted = false
@@ -367,9 +423,7 @@ class OfflineMapDownloadService : Service() {
         JobSpec(
             regionId = intent.getLongExtra(EXTRA_REGION_ID, System.currentTimeMillis()),
             name = intent.getStringExtra(EXTRA_NAME).orEmpty().ifBlank { "Офлайн-карта" },
-            layer = runCatching {
-                MapLayer.valueOf(intent.getStringExtra(EXTRA_LAYER).orEmpty())
-            }.getOrDefault(MapLayer.MAP),
+            layer = parseLayer(intent.getStringExtra(EXTRA_LAYER).orEmpty()),
             latitude = intent.getDoubleExtra(EXTRA_LAT, 0.0),
             longitude = intent.getDoubleExtra(EXTRA_LON, 0.0),
             radiusKm = intent.getDoubleExtra(EXTRA_RADIUS, 5.0),
@@ -419,7 +473,7 @@ class OfflineMapDownloadService : Service() {
             JobSpec(
                 regionId = regionId,
                 name = p.getString(key(regionId, "name"), "Офлайн-карта").orEmpty(),
-                layer = MapLayer.valueOf(
+                layer = parseLayer(
                     p.getString(key(regionId, "layer"), MapLayer.MAP.name).orEmpty()
                 ),
                 latitude = p.getString(key(regionId, "lat"), "0")!!.toDouble(),
@@ -451,6 +505,23 @@ class OfflineMapDownloadService : Service() {
             .remove(key(regionId, "max_zoom"))
             .apply()
     }
+
+    private fun retryDelayMs(attempt: Int): Long = when {
+        attempt <= 1 -> 10_000L
+        attempt == 2 -> 20_000L
+        attempt == 3 -> 45_000L
+        attempt == 4 -> 90_000L
+        else -> 120_000L
+    }
+
+    private fun parseLayer(value: String): MapLayer =
+        if (value == "TERRAIN") {
+            // Migration from 1.2.4: the removed 2D topographic mode becomes Relief
+            // so an old unfinished download is not lost after the update.
+            MapLayer.RELIEF
+        } else {
+            runCatching { MapLayer.valueOf(value) }.getOrDefault(MapLayer.MAP)
+        }
 
     private fun key(regionId: Long, field: String): String = "job_${regionId}_$field"
 

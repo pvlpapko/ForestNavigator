@@ -22,6 +22,7 @@ import kotlin.math.max
 
 object LocalMapStyleServer {
     class PermanentTileException(message: String) : IOException(message)
+    class FatalTileException(message: String) : IOException(message)
 
     private val started = AtomicBoolean(false)
     private lateinit var cacheRoot: File
@@ -70,7 +71,6 @@ object LocalMapStyleServer {
 
     fun mapUrl(): String = baseUrl("style/map.json")
     fun satelliteUrl(): String = baseUrl("style/satellite.json")
-    fun terrainUrl(): String = baseUrl("style/terrain.json")
     fun reliefUrl(): String = baseUrl("style/relief.json")
     fun combinedUrl(): String = baseUrl("style/combined.json")
 
@@ -85,7 +85,6 @@ object LocalMapStyleServer {
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(MapboxSource.STREETS.id)
         MapLayer.SATELLITE -> listOf(MapboxSource.SATELLITE.id)
-        MapLayer.TERRAIN -> listOf(MapboxSource.OUTDOORS.id)
         MapLayer.RELIEF -> listOf(
             MapboxSource.OUTDOORS.id,
             MapboxSource.TERRAIN_RGB.id
@@ -138,7 +137,6 @@ object LocalMapStyleServer {
         when {
             path == "style/map.json" -> sendJson(client, localSingle(MapboxSource.STREETS))
             path == "style/satellite.json" -> sendJson(client, localSingle(MapboxSource.SATELLITE))
-            path == "style/terrain.json" -> sendJson(client, localSingle(MapboxSource.OUTDOORS))
             path == "style/relief.json" -> sendJson(client, localRelief())
             path == "style/combined.json" -> sendJson(client, localCombined())
             path.startsWith("tile/") -> serveTile(client, path)
@@ -215,7 +213,7 @@ object LocalMapStyleServer {
                 }
 
                 when (status) {
-                    401, 403 -> throw IOException("Mapbox token rejected: HTTP $status")
+                    401, 403 -> throw FatalTileException("Mapbox token rejected: HTTP $status")
                     400, 404, 410, 422 ->
                         throw PermanentTileException("Mapbox tile unavailable: HTTP $status")
                     429 -> {
@@ -238,11 +236,13 @@ object LocalMapStyleServer {
                 }
             } catch (e: PermanentTileException) {
                 throw e
+            } catch (e: FatalTileException) {
+                throw e
             } catch (e: SocketTimeoutException) {
                 last = "Mapbox timeout"
             } catch (e: IOException) {
                 last = e.message ?: "Mapbox network error"
-                if (last.contains("token rejected")) throw e
+                if (e is FatalTileException || last.contains("token rejected")) throw FatalTileException(last)
             } finally {
                 runCatching { c?.errorStream?.close() }
                 c?.disconnect()
