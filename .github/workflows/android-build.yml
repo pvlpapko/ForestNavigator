@@ -50,6 +50,41 @@ jobs:
         run: |
           echo "$FORESTNAV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/forestnav-release.jks"
 
+      - name: Recover bundled ArcGIS API key
+        if: ${{ env.ARCGIS_API_KEY == '' && env.FORESTNAV_KEYSTORE_B64 != '' }}
+        run: |
+          TEMP_PASS="forestnav-ci-wrap"
+          keytool -importkeystore \
+            -srckeystore "$RUNNER_TEMP/forestnav-release.jks" \
+            -srcstorepass "$FORESTNAV_STORE_PASSWORD" \
+            -srcalias "$FORESTNAV_KEY_ALIAS" \
+            -srckeypass "$FORESTNAV_KEY_PASSWORD" \
+            -destkeystore "$RUNNER_TEMP/forestnav-signing.p12" \
+            -deststoretype PKCS12 \
+            -deststorepass "$TEMP_PASS" \
+            -destkeypass "$TEMP_PASS" \
+            -noprompt
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/forestnav-signing.p12" \
+            -nocerts -nodes \
+            -passin "pass:$TEMP_PASS" \
+            -out "$RUNNER_TEMP/forestnav-private.pem"
+          base64 --decode ".github/secure/arcgis_api_key.rsa.b64" > "$RUNNER_TEMP/arcgis-key.rsa"
+          openssl pkeyutl -decrypt \
+            -inkey "$RUNNER_TEMP/forestnav-private.pem" \
+            -in "$RUNNER_TEMP/arcgis-key.rsa" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 \
+            -out "$RUNNER_TEMP/arcgis-key.txt"
+          ARCGIS_KEY="$(tr -d '\r\n' < "$RUNNER_TEMP/arcgis-key.txt")"
+          test -n "$ARCGIS_KEY"
+          echo "::add-mask::$ARCGIS_KEY"
+          echo "ARCGIS_API_KEY=$ARCGIS_KEY" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/forestnav-signing.p12" \
+            "$RUNNER_TEMP/forestnav-private.pem" \
+            "$RUNNER_TEMP/arcgis-key.rsa" \
+            "$RUNNER_TEMP/arcgis-key.txt"
+
       - name: Build signed updateable APK
         if: ${{ env.FORESTNAV_KEYSTORE_B64 != '' }}
         env:
