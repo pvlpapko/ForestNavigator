@@ -35,11 +35,9 @@ fun MapScreen(vm: AppViewModel) {
     val location by vm.location.collectAsState()
     val satellites by vm.satellites.collectAsState()
     val waypoints by vm.waypoints.collectAsState()
-    val layer by vm.mapLayer.collectAsState()
     val precise by vm.preciseState.collectAsState()
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
-    val online by vm.online.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -58,54 +56,11 @@ fun MapScreen(vm: AppViewModel) {
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp, vertical = if (short) 4.dp else 8.dp)
             ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    MapLayer.entries.forEach { item ->
-                        FilterChip(
-                            selected = layer == item,
-                            onClick = { vm.setLayer(item) },
-                            label = { Text(item.title) },
-                            leadingIcon = if (layer == item) {
-                                { Icon(Icons.Default.Check, contentDescription = null) }
-                            } else null
-                        )
-                    }
-                }
-
-                if (layer == MapLayer.SATELLITE ||
-                    layer == MapLayer.RELIEF ||
-                    layer == MapLayer.SATELLITE_TERRAIN ||
-                    layer == MapLayer.THREE_D ||
-                    layer == MapLayer.THREE_D_TERRAIN
-                ) {
-                    Text(
-                        if (vm.highDetailMapsEnabled()) {
-                            when (layer) {
-                                MapLayer.SATELLITE -> "EOxCloudless 2025 • Sentinel-2, без токена и API-ключа"
-                                MapLayer.RELIEF -> "Рельеф • EOX Terrain + AWS Terrarium, без токена"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник+рельеф • EOxCloudless 2025 + AWS Terrarium"
-                                MapLayer.THREE_D -> "3D спутник • EOxCloudless 2025 + AWS Terrarium DEM"
-                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • та же EOX-спутниковая карта + усиленный AWS DEM-рельеф"
-                                else -> ""
-                            }
-                        } else {
-                            when (layer) {
-                                MapLayer.SATELLITE -> "Спутник: EOxCloudless 2025"
-                                MapLayer.RELIEF -> "Топография + теневой рельеф"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
-                                MapLayer.THREE_D -> "3D спутник"
-                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф"
-                                else -> ""
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text(
+                    "3D • OpenAerialMap + VersaTiles + Mapterhorn • без токена и API-ключа",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 Spacer(Modifier.height(if (short) 4.dp else 8.dp))
                 Surface(
@@ -164,39 +119,19 @@ fun MapScreen(vm: AppViewModel) {
                         pointPlacementMode = false
                     }
 
-                    if (layer == MapLayer.THREE_D ||
-                        layer == MapLayer.THREE_D_TERRAIN
-                    ) {
-                        key(layer) {
-                            Forest3DMapView(
-                                modifier = Modifier.fillMaxSize(),
-                                location = location!!,
-                                heading = heading,
-                                waypoints = waypoints,
-                                reliefOverlay = layer == MapLayer.THREE_D_TERRAIN,
-                                recenterToken = recenterToken,
-                                pointPlacementEnabled = pointPlacementMode,
-                                onMapClick = mapClick,
-                                onMapLongPress = mapClick,
-                                onWaypointClick = waypointClick,
-                                onMapScaleChanged = { mapScaleMeters = it }
-                            )
-                        }
-                    } else {
-                        ForestMapView(
-                            modifier = Modifier.fillMaxSize(),
-                            location = location!!,
-                            heading = heading,
-                            waypoints = waypoints,
-                            styleUrl = vm.styleUrl(online),
-                            recenterToken = recenterToken,
-                            pointPlacementEnabled = pointPlacementMode,
-                            onMapClick = mapClick,
-                            onMapLongPress = mapClick,
-                            onWaypointClick = waypointClick,
-                            onMapScaleChanged = { mapScaleMeters = it }
-                        )
-                    }
+                    Forest3DMapView(
+                        modifier = Modifier.fillMaxSize(),
+                        location = location!!,
+                        heading = heading,
+                        waypoints = waypoints,
+                        reliefOverlay = true,
+                        recenterToken = recenterToken,
+                        pointPlacementEnabled = pointPlacementMode,
+                        onMapClick = mapClick,
+                        onMapLongPress = mapClick,
+                        onWaypointClick = waypointClick,
+                        onMapScaleChanged = { mapScaleMeters = it }
+                    )
                 }
 
                 if (location != null) {
@@ -1036,15 +971,13 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Картографический модуль переведён с Mapbox-тайлов на открытые источники без API-ключей: " +
-                "карта — EOX OpenStreetMap, спутник — EOxCloudless 2025 (Sentinel-2), " +
-                "рельеф — EOX Terrain + AWS Terrarium, спутник+рельеф — EOxCloudless + AWS Terrarium. " +
-                "3D использует те же EOX/AWS данные. В 3D доступны вращение, наклон до 85° и кнопки «Походный»/«Горизонт». " +
-                "Скачанные области и кэш используются раньше сети."
+            "Единственный режим карты — 3D. Базовый спутник: VersaTiles; при наличии детальной открытой съёмки поверх него используется OpenAerialMap. " +
+                "Объёмный рельеф: Mapterhorn Terrarium DEM. Токены и API-ключи картографических сервисов не нужны. " +
+                "Доступны свободное вращение, наклон до 85° и кнопки «Походный»/«Горизонт»."
         )
         AssistChip(
             onClick = {},
-            label = { Text("EOX + AWS • без API-ключей") },
+            label = { Text("OAM + VersaTiles + Mapterhorn • без токенов") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 

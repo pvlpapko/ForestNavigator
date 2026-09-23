@@ -23,6 +23,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Bundle MapLibre GL JS 6.11.1
+        run: |
+          mkdir -p app/src/main/assets
+          curl --fail --location --retry 4 --retry-delay 2 \
+            "https://unpkg.com/maplibre-gl@6.11.1/dist/maplibre-gl.js" \
+            --output app/src/main/assets/maplibre-gl.js
+          curl --fail --location --retry 4 --retry-delay 2 \
+            "https://unpkg.com/maplibre-gl@6.11.1/dist/maplibre-gl.css" \
+            --output app/src/main/assets/maplibre-gl.css
+          test -s app/src/main/assets/maplibre-gl.js
+          test -s app/src/main/assets/maplibre-gl.css
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:

@@ -1,11 +1,13 @@
 package app.forestnav.ui
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
+import android.annotation.SuppressLint
 import android.location.Location
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,46 +26,68 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.forestnav.data.Waypoint
-import app.forestnav.data.WaypointType
 import app.forestnav.map.LocalMapStyleServer
-import com.mapbox.geojson.Point
-import com.mapbox.maps.CameraBoundsOptions
-import com.mapbox.maps.CameraOptions
-import com.mapbox.maps.MapView
-import com.mapbox.maps.plugin.annotation.annotations
-import com.mapbox.maps.plugin.annotation.generated.PointAnnotation
-import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManager
-import com.mapbox.maps.plugin.annotation.generated.PointAnnotationOptions
-import com.mapbox.maps.plugin.annotation.generated.createPointAnnotationManager
-import com.mapbox.maps.plugin.gestures.addOnMapClickListener
-import com.mapbox.maps.plugin.gestures.addOnMapLongClickListener
-import com.mapbox.maps.plugin.gestures.gestures
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.pow
 
-private class Native3DMapState {
-    var waypointManager: PointAnnotationManager? = null
-    var userManager: PointAnnotationManager? = null
-    var userAnnotation: PointAnnotation? = null
-    val waypointByAnnotationId = mutableMapOf<String, Waypoint>()
-    var waypointFingerprint: Int = 0
-    var styleLoaded = false
+private class Web3DMapState {
+    var pageLoaded = false
+    var mapReady = false
+    var initialized = false
     var lastRecenterToken = -1
-    var lastScaleMeters = 0.0
+    var lastWaypointFingerprint = 0
+    var lastPlacementEnabled: Boolean? = null
+    var lastLat = Double.NaN
+    var lastLon = Double.NaN
 }
 
+private class ForestMapJsBridge(
+    private val onReady: () -> Unit,
+    private val onClick: (Double, Double) -> Unit,
+    private val onLongPress: (Double, Double) -> Unit,
+    private val onWaypoint: (Long) -> Unit,
+    private val onScale: (Double) -> Unit
+) {
+    private val main = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun onMapReady() {
+        main.post { onReady() }
+    }
+
+    @JavascriptInterface
+    fun onMapClick(latitude: Double, longitude: Double) {
+        main.post { onClick(latitude, longitude) }
+    }
+
+    @JavascriptInterface
+    fun onMapLongPress(latitude: Double, longitude: Double) {
+        main.post { onLongPress(latitude, longitude) }
+    }
+
+    @JavascriptInterface
+    fun onWaypointClick(id: String) {
+        val value = id.toLongOrNull() ?: return
+        main.post { onWaypoint(value) }
+    }
+
+    @JavascriptInterface
+    fun onScaleChanged(meters: Double) {
+        if (!meters.isFinite() || meters <= 0.0) return
+        main.post { onScale(meters) }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun Forest3DMapView(
     modifier: Modifier,
     location: Location,
     heading: Float?,
     waypoints: List<Waypoint>,
-    reliefOverlay: Boolean = false,
+    reliefOverlay: Boolean = true,
     recenterToken: Int = 0,
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
@@ -71,40 +95,62 @@ fun Forest3DMapView(
     onWaypointClick: (Waypoint) -> Unit = {},
     onMapScaleChanged: (Double) -> Unit = {}
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val mapView = remember { MapView(context) }
-    val state = remember { Native3DMapState() }
+    @Suppress("UNUSED_VARIABLE")
+    val alwaysRelief = reliefOverlay
 
-    val currentPlacementEnabled = rememberUpdatedState(pointPlacementEnabled)
+    val context = LocalContext.current
+    val state = remember { Web3DMapState() }
+
+    val currentWaypoints = rememberUpdatedState(waypoints)
     val currentMapClick = rememberUpdatedState(onMapClick)
     val currentLongPress = rememberUpdatedState(onMapLongPress)
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
-    val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
+    val currentScale = rememberUpdatedState(onMapScaleChanged)
 
-    DisposableEffect(mapView, lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> mapView.onStart()
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_STOP -> mapView.onStop()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
-                else -> Unit
-            }
+    val webView = remember {
+        WebView(context).apply {
+            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.loadsImagesAutomatically = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.allowContentAccess = false
+            settings.allowFileAccess = false
+            settings.javaScriptCanOpenWindowsAutomatically = false
+            webChromeClient = WebChromeClient()
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
+    }
 
-        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-            mapView.onStart()
-        }
-        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-            mapView.onResume()
-        }
+    val bridge = remember {
+        ForestMapJsBridge(
+            onReady = {
+                state.mapReady = true
+                webView.post {
+                    pushWaypoints(webView, currentWaypoints.value)
+                    webView.evaluateJavascript(
+                        "window.setPlacementEnabled($pointPlacementEnabled);",
+                        null
+                    )
+                }
+            },
+            onClick = { lat, lon -> currentMapClick.value(lat, lon) },
+            onLongPress = { lat, lon -> currentLongPress.value(lat, lon) },
+            onWaypoint = { id ->
+                currentWaypoints.value
+                    .firstOrNull { it.id == id }
+                    ?.let(currentWaypointClick.value)
+            },
+            onScale = { currentScale.value(it) }
+        )
+    }
 
+    DisposableEffect(webView) {
         onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            runCatching { mapView.onStop() }
-            runCatching { mapView.onDestroy() }
+            runCatching { webView.removeJavascriptInterface("AndroidBridge") }
+            runCatching { webView.stopLoading() }
+            runCatching { webView.loadUrl("about:blank") }
+            runCatching { webView.clearHistory() }
+            runCatching { webView.destroy() }
         }
     }
 
@@ -112,89 +158,73 @@ fun Forest3DMapView(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = {
-                mapView.apply {
-                    gestures.pitchEnabled = true
-                    gestures.rotateEnabled = true
-                    gestures.scrollEnabled = true
-                    gestures.pinchToZoomEnabled = true
-
-                    gestures.addOnMapClickListener { point ->
-                        if (currentPlacementEnabled.value) {
-                            currentMapClick.value(point.latitude(), point.longitude())
-                            true
-                        } else {
-                            false
+                webView.apply {
+                    addJavascriptInterface(bridge, "AndroidBridge")
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String) {
+                            state.pageLoaded = true
+                            state.initialized = true
+                            state.lastRecenterToken = recenterToken
+                            view.evaluateJavascript(
+                                "window.initMap(" +
+                                    "${location.latitude}," +
+                                    "${location.longitude}," +
+                                    "${heading?.toDouble() ?: 0.0}" +
+                                    ");",
+                                null
+                            )
                         }
                     }
-
-                    gestures.addOnMapLongClickListener { point ->
-                        currentLongPress.value(point.latitude(), point.longitude())
-                        true
-                    }
-
-                    val mapboxMap = mapboxMap
-
-                    // The SDK default maximum pitch is too restrictive for a useful
-                    // walking perspective. Allow the camera to move close to the horizon.
-                    mapboxMap.setBounds(
-                        CameraBoundsOptions.Builder()
-                            .minPitch(0.0)
-                            .maxPitch(MAX_PITCH)
-                            .build()
-                    )
-
-                    mapboxMap.setCamera(
-                        CameraOptions.Builder()
-                            .center(Point.fromLngLat(location.longitude, location.latitude))
-                            .zoom(15.5)
-                            .pitch(DEFAULT_PITCH)
-                            .bearing(heading?.toDouble() ?: 0.0)
-                            .build()
-                    )
-
-                    mapboxMap.loadStyle(LocalMapStyleServer.threeDStyleJson(reliefOverlay)) {
-                        state.styleLoaded = true
-                        state.lastRecenterToken = recenterToken
-
-                        state.waypointManager = annotations.createPointAnnotationManager().apply {
-                            addClickListener { annotation ->
-                                val waypoint = state.waypointByAnnotationId[annotation.id]
-                                if (waypoint != null) {
-                                    currentWaypointClick.value(waypoint)
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                        }
-
-                        state.userManager = annotations.createPointAnnotationManager()
-                        updateUserAnnotation(context, state, location)
-                        updateWaypointAnnotations3D(context, state, waypoints)
-                        publish3DScale(mapView, state, currentScaleCallback.value, force = true)
-                    }
+                    loadUrl(LocalMapStyleServer.webMapUrl())
                 }
             },
-            update = {
-                if (!state.styleLoaded) return@AndroidView
+            update = { view ->
+                if (!state.pageLoaded || !state.initialized) return@AndroidView
 
-                updateUserAnnotation(context, state, location)
-                updateWaypointAnnotations3D(context, state, waypoints)
+                val moved =
+                    !state.lastLat.isFinite() ||
+                        abs(state.lastLat - location.latitude) > 0.0000005 ||
+                        abs(state.lastLon - location.longitude) > 0.0000005
 
-                if (state.lastRecenterToken != recenterToken) {
-                    val current = mapView.mapboxMap.cameraState
-                    mapView.mapboxMap.setCamera(
-                        CameraOptions.Builder()
-                            .center(Point.fromLngLat(location.longitude, location.latitude))
-                            .zoom(maxOf(current.zoom, 16.0))
-                            .pitch(current.pitch.coerceIn(0.0, MAX_PITCH))
-                            .bearing(heading?.toDouble() ?: current.bearing)
-                            .build()
+                if (moved) {
+                    view.evaluateJavascript(
+                        "window.updateLocation(" +
+                            "${location.latitude}," +
+                            "${location.longitude}" +
+                            ");",
+                        null
+                    )
+                    state.lastLat = location.latitude
+                    state.lastLon = location.longitude
+                }
+
+                if (state.mapReady && state.lastRecenterToken != recenterToken) {
+                    view.evaluateJavascript(
+                        "window.recenter(" +
+                            "${location.latitude}," +
+                            "${location.longitude}," +
+                            "${heading?.toDouble() ?: 0.0}" +
+                            ");",
+                        null
                     )
                     state.lastRecenterToken = recenterToken
                 }
 
-                publish3DScale(mapView, state, currentScaleCallback.value)
+                if (state.mapReady) {
+                    val fingerprint = waypointFingerprint(waypoints)
+                    if (fingerprint != state.lastWaypointFingerprint) {
+                        pushWaypoints(view, waypoints)
+                        state.lastWaypointFingerprint = fingerprint
+                    }
+
+                    if (state.lastPlacementEnabled != pointPlacementEnabled) {
+                        view.evaluateJavascript(
+                            "window.setPlacementEnabled($pointPlacementEnabled);",
+                            null
+                        )
+                        state.lastPlacementEnabled = pointPlacementEnabled
+                    }
+                }
             }
         )
 
@@ -204,198 +234,66 @@ fun Forest3DMapView(
                 .padding(end = 8.dp),
             horizontalAlignment = Alignment.End
         ) {
-            FilledTonalButton(
-                onClick = { set3DPitch(mapView, TOP_PITCH, keepZoom = true) },
-                modifier = Modifier.widthIn(min = 92.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
-            ) {
-                Text("Сверху", style = MaterialTheme.typography.labelSmall)
+            CameraButton("Сверху") {
+                setPitch(webView, TOP_PITCH)
             }
-
-            FilledTonalButton(
-                onClick = { set3DPitch(mapView, WALKING_PITCH, keepZoom = false) },
-                modifier = Modifier
-                    .padding(top = 6.dp)
-                    .widthIn(min = 92.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
-            ) {
-                Text("Походный", style = MaterialTheme.typography.labelSmall)
+            CameraButton("Походный") {
+                setPitch(webView, WALKING_PITCH)
             }
-
-            FilledTonalButton(
-                onClick = { set3DPitch(mapView, HORIZON_PITCH, keepZoom = false) },
-                modifier = Modifier
-                    .padding(top = 6.dp)
-                    .widthIn(min = 92.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
-            ) {
-                Text("Горизонт", style = MaterialTheme.typography.labelSmall)
+            CameraButton("Горизонт") {
+                setPitch(webView, HORIZON_PITCH)
             }
         }
     }
 }
 
-private fun set3DPitch(
-    mapView: MapView,
-    pitch: Double,
-    keepZoom: Boolean
+@Composable
+private fun CameraButton(
+    label: String,
+    onClick: () -> Unit
 ) {
-    val current = mapView.mapboxMap.cameraState
-    mapView.mapboxMap.setCamera(
-        CameraOptions.Builder()
-            .center(current.center)
-            .zoom(if (keepZoom) current.zoom else maxOf(current.zoom, 16.8))
-            .bearing(current.bearing)
-            .pitch(pitch.coerceIn(0.0, MAX_PITCH))
-            .build()
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .widthIn(min = 92.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun setPitch(webView: WebView, pitch: Double) {
+    webView.evaluateJavascript("window.setPitch($pitch);", null)
+}
+
+private fun pushWaypoints(webView: WebView, waypoints: List<Waypoint>) {
+    val json = JSONArray()
+    waypoints.forEach { waypoint ->
+        json.put(
+            JSONObject()
+                .put("id", waypoint.id)
+                .put("type", waypoint.type.name)
+                .put("name", waypoint.name)
+                .put("lat", waypoint.latitude)
+                .put("lon", waypoint.longitude)
+        )
+    }
+    webView.evaluateJavascript(
+        "window.updateWaypoints($json);",
+        null
     )
 }
 
-private fun updateUserAnnotation(
-    context: android.content.Context,
-    state: Native3DMapState,
-    location: Location
-) {
-    val manager = state.userManager ?: return
-    val point = Point.fromLngLat(location.longitude, location.latitude)
-    val existing = state.userAnnotation
-
-    if (existing == null) {
-        state.userAnnotation = manager.create(
-            PointAnnotationOptions()
-                .withPoint(point)
-                .withIconImage(create3DUserIcon(context))
-                .withIconSize(1.0)
-        )
-    } else {
-        existing.point = point
-        manager.update(existing)
+private fun waypointFingerprint(waypoints: List<Waypoint>): Int =
+    waypoints.fold(1) { acc, waypoint ->
+        var value = 31 * acc + waypoint.id.hashCode()
+        value = 31 * value + waypoint.latitude.hashCode()
+        value = 31 * value + waypoint.longitude.hashCode()
+        value = 31 * value + waypoint.type.hashCode()
+        value
     }
-}
-
-private fun updateWaypointAnnotations3D(
-    context: android.content.Context,
-    state: Native3DMapState,
-    waypoints: List<Waypoint>
-) {
-    val manager = state.waypointManager ?: return
-    val fingerprint = waypoints.fold(1) { acc, p -> 31 * acc + p.hashCode() }
-    if (fingerprint == state.waypointFingerprint) return
-
-    manager.deleteAll()
-    state.waypointByAnnotationId.clear()
-
-    waypoints.forEach { p ->
-        val annotation = manager.create(
-            PointAnnotationOptions()
-                .withPoint(Point.fromLngLat(p.longitude, p.latitude))
-                .withIconImage(create3DWaypointIcon(context, p.type))
-                .withIconSize(1.0)
-                .withTextField(p.name)
-                .withTextColor(Color.WHITE)
-                .withTextHaloColor(Color.BLACK)
-                .withTextHaloWidth(1.3)
-                .withTextOffset(listOf(0.0, -2.4))
-        )
-        state.waypointByAnnotationId[annotation.id] = p
-    }
-
-    state.waypointFingerprint = fingerprint
-}
-
-private fun publish3DScale(
-    mapView: MapView,
-    state: Native3DMapState,
-    callback: (Double) -> Unit,
-    force: Boolean = false
-) {
-    val width = mapView.width
-    if (width <= 0) return
-
-    val camera = mapView.mapboxMap.cameraState
-    val metersPerPixel =
-        156543.03392 * cos(Math.toRadians(camera.center.latitude())) / 2.0.pow(camera.zoom)
-    val referencePixels = minOf(
-        width * 0.32,
-        160.0 * mapView.resources.displayMetrics.density
-    )
-    val scaleMeters = (metersPerPixel * referencePixels).coerceAtLeast(0.1)
-    val changedEnough = state.lastScaleMeters <= 0.0 ||
-        abs(scaleMeters - state.lastScaleMeters) /
-        state.lastScaleMeters.coerceAtLeast(0.1) > 0.025
-
-    if (force || changedEnough) {
-        state.lastScaleMeters = scaleMeters
-        callback(scaleMeters)
-    }
-}
-
-private fun create3DUserIcon(context: android.content.Context): Bitmap {
-    val density = context.resources.displayMetrics.density
-    val size = (42f * density).toInt().coerceAtLeast(42)
-    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-
-    val outer = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-    }
-    val inner = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(35, 210, 145)
-        style = Paint.Style.FILL
-    }
-
-    canvas.drawCircle(size / 2f, size / 2f, size * 0.46f, outer)
-    canvas.drawCircle(size / 2f, size / 2f, size * 0.34f, inner)
-    return bitmap
-}
-
-private fun create3DWaypointIcon(
-    context: android.content.Context,
-    type: WaypointType
-): Bitmap {
-    val density = context.resources.displayMetrics.density
-    val size = (48f * density).toInt().coerceAtLeast(48)
-    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-
-    val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(225, 18, 28, 22)
-        style = Paint.Style.FILL
-    }
-    val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 2f * density
-    }
-
-    val radius = size * 0.46f
-    canvas.drawCircle(size / 2f, size / 2f, radius, bg)
-    canvas.drawCircle(size / 2f, size / 2f, radius, ring)
-
-    val symbol = when (type) {
-        WaypointType.CAR -> "🚗"
-        WaypointType.MUSHROOM -> "🍄"
-        WaypointType.WATER -> "💧"
-        WaypointType.DANGER -> "⚠"
-        WaypointType.FAVORITE -> "★"
-        WaypointType.CUSTOM -> "📍"
-    }
-
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        textSize = 30f * density
-        typeface = Typeface.DEFAULT_BOLD
-        color = if (type == WaypointType.FAVORITE) Color.YELLOW else Color.WHITE
-    }
-    val fm = paint.fontMetrics
-    val y = size / 2f - (fm.ascent + fm.descent) / 2f
-    canvas.drawText(symbol, size / 2f, y, paint)
-    return bitmap
-}
 
 private const val TOP_PITCH = 0.0
-private const val DEFAULT_PITCH = 55.0
 private const val WALKING_PITCH = 72.0
 private const val HORIZON_PITCH = 85.0
-private const val MAX_PITCH = 85.0

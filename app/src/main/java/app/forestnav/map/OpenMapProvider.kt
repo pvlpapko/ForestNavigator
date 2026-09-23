@@ -6,74 +6,52 @@ internal enum class OpenMapSource(
     val contentType: String,
     val maxZoom: Int,
     val tileSize: Int,
-    val minRequestIntervalMs: Long
+    val minRequestIntervalMs: Long,
+    val downloadable: Boolean
 ) {
-    EOX_OSM(
-        id = "eox_osm",
-        extension = "jpg",
-        contentType = "image/jpeg",
-        maxZoom = 18,
-        tileSize = 256,
-        minRequestIntervalMs = 45L
+    VERSATILES_SATELLITE(
+        id = "versatiles_satellite",
+        extension = "webp",
+        contentType = "image/webp",
+        maxZoom = 12,
+        tileSize = 512,
+        minRequestIntervalMs = 25L,
+        downloadable = true
     ),
-    EOX_SATELLITE_2025(
-        id = "eox_satellite_2025",
-        extension = "jpg",
-        contentType = "image/jpeg",
-        maxZoom = 14,
-        tileSize = 256,
-        minRequestIntervalMs = 55L
-    ),
-    EOX_TERRAIN(
-        id = "eox_terrain",
-        extension = "jpg",
-        contentType = "image/jpeg",
-        maxZoom = 18,
-        tileSize = 256,
-        minRequestIntervalMs = 45L
-    ),
-    AWS_TERRARIUM(
-        id = "aws_terrarium",
+    OAM_HIGHRES(
+        id = "oam_highres",
         extension = "png",
         contentType = "image/png",
-        maxZoom = 15,
+        maxZoom = 22,
         tileSize = 256,
-        minRequestIntervalMs = 35L
+        minRequestIntervalMs = 40L,
+        downloadable = false
+    ),
+    MAPTERHORN_DEM(
+        id = "mapterhorn_dem",
+        extension = "webp",
+        contentType = "image/webp",
+        maxZoom = 15,
+        tileSize = 512,
+        minRequestIntervalMs = 20L,
+        downloadable = true
     )
 }
 
 internal object OpenMapProvider {
     const val ATTRIBUTION =
-        "EOX / EOxCloudless 2025 • Copernicus Sentinel data • OpenStreetMap contributors • AWS/Mapzen Terrain"
+        "VersaTiles sources • OpenAerialMap / Open Imagery Network • © Mapterhorn"
 
     fun tileUrl(source: OpenMapSource, z: Int, x: Int, y: Int): String =
         when (source) {
-            OpenMapSource.EOX_OSM ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/osm_3857/default/g/$z/$y/$x.jpg"
+            OpenMapSource.VERSATILES_SATELLITE ->
+                "https://tiles.versatiles.org/tiles/satellite/$z/$x/$y"
 
-            OpenMapSource.EOX_SATELLITE_2025 ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/$z/$y/$x.jpg"
+            OpenMapSource.OAM_HIGHRES ->
+                "https://global.imagery.hotosm.org/$z/$x/$y.png"
 
-            OpenMapSource.EOX_TERRAIN ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/terrain_3857/default/g/$z/$y/$x.jpg"
-
-            OpenMapSource.AWS_TERRARIUM ->
-                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$z/$x/$y.png"
-        }
-
-    fun tileTemplate(source: OpenMapSource): String =
-        when (source) {
-            OpenMapSource.EOX_OSM ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/osm_3857/default/g/{z}/{y}/{x}.jpg"
-
-            OpenMapSource.EOX_SATELLITE_2025 ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"
-
-            OpenMapSource.EOX_TERRAIN ->
-                "https://tiles.maps.eox.at/wmts/1.0.0/terrain_3857/default/g/{z}/{y}/{x}.jpg"
-
-            OpenMapSource.AWS_TERRARIUM ->
-                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+            OpenMapSource.MAPTERHORN_DEM ->
+                "https://tiles.mapterhorn.com/$z/$x/$y.webp"
         }
 
     fun sourceById(id: String): OpenMapSource =

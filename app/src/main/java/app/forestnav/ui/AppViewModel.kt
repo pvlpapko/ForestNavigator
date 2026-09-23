@@ -64,7 +64,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _navigationTarget = MutableStateFlow<Waypoint?>(null)
     val navigationTarget = _navigationTarget.asStateFlow()
 
-    private val _mapLayer = MutableStateFlow(MapLayer.MAP)
+    private val _mapLayer = MutableStateFlow(MapLayer.THREE_D_TERRAIN)
     val mapLayer = _mapLayer.asStateFlow()
 
     data class PreciseState(
@@ -211,25 +211,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val loc: Location = location.value ?: return
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-        // EOX Sentinel-2 2025 is natively available through z14 in Web
-        // Mercator. AWS Terrarium DEM is available through z15. Always request
-        // the complete native detail of those public sources for the whole area.
-        val maxZoom = when (layer) {
-            MapLayer.SATELLITE -> 14.0
-            MapLayer.SATELLITE_TERRAIN,
-            MapLayer.THREE_D,
-            MapLayer.THREE_D_TERRAIN,
-            MapLayer.RELIEF -> 15.0
-            else -> when {
-                radiusKm <= 2.0 -> 18.0
-                radiusKm <= 5.0 -> 17.0
-                radiusKm <= 10.0 -> 16.0
-                radiusKm <= 25.0 -> 15.0
-                radiusKm <= 50.0 -> 14.0
-                radiusKm <= 100.0 -> 13.0
-                else -> 12.0
-            }
-        }
+        // The 3D offline pack stores the complete native VersaTiles
+        // satellite range (through z12) and Mapterhorn DEM range (through z15).
+        // OfflineMapManager clamps each source to its own actual maximum.
+        val maxZoom = 15.0
         val minZoom = when {
             radiusKm >= 100.0 -> 7.0
             radiusKm >= 50.0 -> 8.0

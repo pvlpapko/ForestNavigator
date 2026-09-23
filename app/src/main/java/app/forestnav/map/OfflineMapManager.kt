@@ -520,10 +520,9 @@ class OfflineMapManager(private val context: Context) {
 
         sources.forEach { source ->
             val sourceSpec = OpenMapProvider.sourceById(source)
-            val zoomOffset = if (sourceSpec.tileSize == 512) 1 else 0
-            val sourceMinZoom = (minZoom - zoomOffset).coerceAtLeast(0)
+            val sourceMinZoom = minZoom.coerceAtLeast(0)
             val sourceMaxZoom = minOf(
-                maxZoom - zoomOffset,
+                maxZoom,
                 LocalMapStyleServer.maxDownloadZoom(source)
             )
 

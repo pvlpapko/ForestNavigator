@@ -11,13 +11,10 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "1.2.9"
+        versionCode = 42
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "MAPBOX_TOKEN_A", "\"pk.\"")
-        buildConfigField("String", "MAPBOX_TOKEN_B", "\"eyJ1IjoicGhhcmdvcyIsImEiOiJjbXVkYWpkMjgwY2sxMnlxemh0cm1uY3Z6In0.\"")
-        buildConfigField("String", "MAPBOX_TOKEN_C", "\"fx9L7GBqPLIwUpqkhzh8Dg\"")
         vectorDrawables.useSupportLibrary = true
     }
 
@@ -74,9 +71,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
-
-    implementation("org.maplibre.gl:android-sdk-opengl:13.6.1")
-    implementation("com.mapbox.maps:android:11.31.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
