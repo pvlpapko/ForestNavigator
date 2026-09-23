@@ -23,14 +23,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Bundle MapLibre GL JS 6.11.1
+      - name: Bundle MapLibre GL JS 6.10.0
         run: |
           mkdir -p app/src/main/assets
           curl --fail --location --retry 4 --retry-delay 2 \
-            "https://unpkg.com/maplibre-gl@6.11.1/dist/maplibre-gl.js" \
+            "https://cdn.jsdelivr.net/npm/maplibre-gl@6.10.0/dist/maplibre-gl.js" \
+            --output app/src/main/assets/maplibre-gl.js \
+          || curl --fail --location --retry 4 --retry-delay 2 \
+            "https://tiles.versatiles.org/assets/lib/maplibre-gl/maplibre-gl.js" \
             --output app/src/main/assets/maplibre-gl.js
           curl --fail --location --retry 4 --retry-delay 2 \
-            "https://unpkg.com/maplibre-gl@6.11.1/dist/maplibre-gl.css" \
+            "https://cdn.jsdelivr.net/npm/maplibre-gl@6.10.0/dist/maplibre-gl.css" \
+            --output app/src/main/assets/maplibre-gl.css \
+          || curl --fail --location --retry 4 --retry-delay 2 \
+            "https://tiles.versatiles.org/assets/lib/maplibre-gl/maplibre-gl.css" \
             --output app/src/main/assets/maplibre-gl.css
           test -s app/src/main/assets/maplibre-gl.js
           test -s app/src/main/assets/maplibre-gl.css
