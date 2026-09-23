@@ -5,24 +5,22 @@ import app.forestnav.data.ForestDatabase
 import app.forestnav.data.SettingsStore
 import com.arcgismaps.ArcGISEnvironment
 import com.arcgismaps.ApiKey
+import org.maplibre.android.MapLibre
 
 class ForestNavApplication : Application() {
     lateinit var database: ForestDatabase
         private set
-
     lateinit var settings: SettingsStore
         private set
 
     override fun onCreate() {
         super.onCreate()
+        MapLibre.getInstance(this)
+
         database = ForestDatabase(this)
         settings = SettingsStore(this)
-        val configuredKey = BuildConfig.ARCGIS_API_KEY.ifBlank { settings.arcGisApiKey }
-        applyArcGisApiKey(configuredKey)
-    }
 
-    fun applyArcGisApiKey(value: String) {
-        val key = value.trim()
+        val key = BuildConfig.ARCGIS_API_KEY.trim()
         ArcGISEnvironment.apiKey = if (key.isBlank()) null else ApiKey.create(key)
     }
 }

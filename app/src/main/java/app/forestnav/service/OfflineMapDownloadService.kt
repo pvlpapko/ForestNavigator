@@ -119,7 +119,20 @@ class OfflineMapDownloadService : Service() {
                     spec.regionId, spec.layer, spec.latitude, spec.longitude,
                     spec.radiusKm, spec.maxZoom.toInt()
                 )
-                check(chunks.isNotEmpty()) { "Не удалось подготовить части карты" }
+                if (chunks.isEmpty()) {
+                    saveJob(spec, active = false)
+                    OfflineMapDownloadState.publish(
+                        OfflineMapManager.DownloadProgress(
+                            regionId = spec.regionId,
+                            name = spec.name,
+                            layerTitle = spec.layer.title,
+                            fatal = true,
+                            active = false,
+                            error = "Для пользовательской карты автоматическая офлайн-загрузка не поддерживается."
+                        )
+                    )
+                    return@launch
+                }
 
                 var completed = chunks.count {
                     it.file.isFile && it.file.length() > MIN_PACKAGE_BYTES

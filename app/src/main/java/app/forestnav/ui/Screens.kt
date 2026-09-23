@@ -40,7 +40,7 @@ fun MapScreen(vm: AppViewModel) {
     val precise by vm.preciseState.collectAsState()
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
-    val arcGisKeyVersion by vm.arcGisKeyVersion.collectAsState()
+    val online by vm.online.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -140,13 +140,28 @@ fun MapScreen(vm: AppViewModel) {
                         pointPlacementMode = false
                     }
 
-                    key(layer, arcGisKeyVersion) {
+                    if (layer == MapLayer.CUSTOM) {
+                        CustomMapLibreView(
+                            modifier = Modifier.fillMaxSize(),
+                            location = location!!,
+                            heading = heading,
+                            waypoints = waypoints,
+                            styleUrl = vm.styleUrl(online),
+                            recenterToken = recenterToken,
+                            pointPlacementEnabled = pointPlacementMode,
+                            onMapClick = mapClick,
+                            onMapLongPress = mapClick,
+                            onWaypointClick = waypointClick,
+                            onMapScaleChanged = { mapScaleMeters = it }
+                        )
+                    } else {
                         ForestMapView(
                             modifier = Modifier.fillMaxSize(),
                             location = location!!,
                             heading = heading,
                             waypoints = waypoints,
                             layer = layer,
+                            online = online,
                             recenterToken = recenterToken,
                             pointPlacementEnabled = pointPlacementMode,
                             onMapClick = mapClick,
@@ -799,8 +814,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "ArcGIS автоматически разбивается приложением на несколько TPKX-пакетов, чтобы большие области не упирались в лимит одной операции экспорта. " +
-                    "Для спутника сохраняется HD-детализация по всей выбранной области; уже готовые пакеты при докачивании не загружаются повторно."
+                    "Офлайн ArcGIS делится на несколько пакетов, поэтому большие области не обрезаются лимитом одной операции. " +
+                    "Спутник и спутник+рельеф скачиваются в HD по всей выбранной области; готовые части при продолжении не скачиваются повторно."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -820,8 +835,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             if (radius >= 50.0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Большая область в HD может занимать много места и скачиваться долго. " +
-                        "Качество к краям области не снижается: область автоматически делится на безопасные части.",
+                    "Большая HD-область может занимать много места и скачиваться долго. " +
+                        "Качество не снижается к краям: приложение автоматически делит область на части.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -889,9 +904,9 @@ private fun OfflineScreen(vm: AppViewModel) {
                                         Text(
                                             when {
                                                 p.missingResources > 0L ->
-                                                    "Область уже работает офлайн. Осталось докачать: ${p.missingResources} пакетов; приложение продолжит автоматически."
+                                                    "Область уже работает офлайн. Осталось докачать: ${p.missingResources} тайлов; приложение продолжит автоматически."
                                                 p.skippedResources > 0L ->
-                                                    "Готово. Недоступных у провайдера пакетов пропущено: ${p.skippedResources}."
+                                                    "Готово. Недоступных у провайдера тайлов пропущено: ${p.skippedResources}."
                                                 else ->
                                                     "Готово — область доступна офлайн."
                                             },
@@ -917,7 +932,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                                             )
                                             if (p.needsRetry && p.missingResources > 0L) {
                                                 Text(
-                                                    "Автодокачивание: осталось ${p.missingResources} пакетов. Приложение продолжит само.",
+                                                    "Автодокачивание: осталось ${p.missingResources} тайлов. Приложение продолжит само.",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
@@ -979,6 +994,7 @@ private fun OfflineScreen(vm: AppViewModel) {
 
 @Composable
 private fun SettingsScreen(vm: AppViewModel) {
+    var custom by remember { mutableStateOf(vm.customStyle()) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
 
@@ -991,21 +1007,30 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "ArcGIS: Navigation для обычной карты, World Imagery для HD-спутника, " +
-                "Streets Relief для рельефа и World Imagery с hillshade/подписями для комбинированного режима. " +
-                "3D-режимы полностью удалены."
+            "Основа интерфейса, навигации и указателей сохранена от версии 1.2.9. " +
+                "3D удалён полностью. Карта — ArcGIS Open OSM с домами и подробными подписями; " +
+                "рельеф — тот же подробный Open OSM с теневым рельефом; спутник — ArcGIS World Imagery; " +
+                "спутник+рельеф — World Imagery с подписями и hillshade."
         )
         AssistChip(
             onClick = {},
-            label = { Text("ArcGIS • 2D + офлайн TPKX") },
+            label = { Text("ArcGIS + Open OSM • 2D") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
-        Text(
-            "API-ключ ArcGIS встроен в сборку приложения. Вводить его вручную на телефоне не требуется.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        HorizontalDivider()
+
+        Text("Свой MapLibre style URL")
+        OutlinedTextField(
+            value = custom,
+            onValueChange = { custom = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("https://…/style.json") },
+            singleLine = true
         )
+        Button(onClick = { vm.updateCustomStyle(custom) }) {
+            Text("Сохранить URL")
+        }
 
         HorizontalDivider()
 

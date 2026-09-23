@@ -11,8 +11,8 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 44
-        versionName = "1.4.1"
+        versionCode = 45
+        versionName = "1.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -76,7 +76,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation("com.esri:arcgis-maps-kotlin:200.7.0")
+    implementation("org.maplibre.gl:android-sdk-opengl:13.6.1")
+    implementation("com.esri:arcgis-maps-kotlin:200.8.3")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

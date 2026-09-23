@@ -193,7 +193,7 @@ class OfflineMapManager(private val context: Context) {
     }
 
     companion object {
-        private const val ROOT_DIR = "arcgis_offline_v1"
+        private const val ROOT_DIR = "arcgis_offline_v2"
         private const val SAFE_TILES_PER_EXPORT = 100_000.0
         private const val MAX_SPLITS_PER_AXIS = 12
     }

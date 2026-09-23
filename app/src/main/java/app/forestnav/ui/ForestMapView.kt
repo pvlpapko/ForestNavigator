@@ -21,7 +21,6 @@ import com.arcgismaps.geometry.GeometryEngine
 import com.arcgismaps.geometry.Point
 import com.arcgismaps.geometry.SpatialReference
 import com.arcgismaps.mapping.ArcGISMap
-import com.arcgismaps.mapping.Basemap
 import com.arcgismaps.mapping.Viewpoint
 import com.arcgismaps.mapping.layers.ArcGISTiledLayer
 import com.arcgismaps.mapping.layers.TileCache
@@ -40,8 +39,10 @@ private class ArcMapState {
     val waypointOverlay = GraphicsOverlay()
     val userOverlay = GraphicsOverlay()
     var userGraphic: Graphic? = null
+    var userSymbol: SimpleMarkerSymbol? = null
     var waypointFingerprint: Int = 0
     var currentLayer: MapLayer? = null
+    var currentOnline: Boolean? = null
     var recenterToken: Int = -1
     var inputJobs: List<Job> = emptyList()
     var lastScale: Double = 0.0
@@ -54,6 +55,7 @@ fun ForestMapView(
     heading: Float?,
     waypoints: List<Waypoint>,
     layer: MapLayer,
+    online: Boolean,
     recenterToken: Int = 0,
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
@@ -160,18 +162,19 @@ fun ForestMapView(
                     mapView = this,
                     state = state,
                     offline = offline,
-                    layer = layer
+                    layer = layer,
+                    online = online
                 )
-                updateUserLocation(state, location)
+                updateUserLocation(state, location, heading)
                 updateWaypoints(state, waypoints)
             }
         },
         update = { view ->
-            if (state.currentLayer != layer) {
-                applyLayer(view, state, offline, layer)
+            if (state.currentLayer != layer || state.currentOnline != online) {
+                applyLayer(view, state, offline, layer, online)
             }
 
-            updateUserLocation(state, location)
+            updateUserLocation(state, location, heading)
             updateWaypoints(state, waypoints)
 
             if (state.recenterToken != recenterToken) {
@@ -196,7 +199,8 @@ private fun applyLayer(
     mapView: MapView,
     state: ArcMapState,
     offline: OfflineMapManager,
-    layer: MapLayer
+    layer: MapLayer,
+    online: Boolean
 ) {
     val map = ArcGISMap(MapStyles.basemapStyle(layer)).apply {
         initialViewpoint = mapView.getCurrentViewpoint(
@@ -204,54 +208,66 @@ private fun applyLayer(
         )
     }
 
-    if (layer == MapLayer.SATELLITE_TERRAIN) {
+    if (online && layer == MapLayer.SATELLITE_TERRAIN) {
         map.operationalLayers.add(
             ArcGISTiledLayer(MapStyles.HILLSHADE_ONLINE).apply {
-                opacity = 0.24f
+                opacity = 0.22f
             }
         )
     }
 
-    val packages = offline.packagesFor(layer)
-    packages
-        .sortedBy {
-            when (it.role) {
-                OfflineLayerRole.BASE -> 0
-                OfflineLayerRole.HILLSHADE -> 1
-                OfflineLayerRole.REFERENCE -> 2
+    if (!online) {
+        offline.packagesFor(layer)
+            .sortedBy {
+                when (it.role) {
+                    OfflineLayerRole.BASE -> 0
+                    OfflineLayerRole.HILLSHADE -> 1
+                    OfflineLayerRole.REFERENCE -> 2
+                }
             }
-        }
-        .forEach { item ->
-            val cache = TileCache(item.file.absolutePath)
-            val tiledLayer = ArcGISTiledLayer(cache).apply {
-                opacity = item.opacity
+            .forEach { item ->
+                val cache = TileCache(item.file.absolutePath)
+                map.operationalLayers.add(
+                    ArcGISTiledLayer(cache).apply {
+                        opacity = item.opacity
+                    }
+                )
             }
-            map.operationalLayers.add(tiledLayer)
-        }
+    }
 
     mapView.map = map
     state.currentLayer = layer
+    state.currentOnline = online
 }
 
-private fun updateUserLocation(state: ArcMapState, location: Location) {
+private fun updateUserLocation(
+    state: ArcMapState,
+    location: Location,
+    heading: Float?
+) {
     val point = Point(
         location.longitude,
         location.latitude,
         SpatialReference.wgs84()
     )
 
-    val existing = state.userGraphic
-    if (existing == null) {
-        val symbol = SimpleMarkerSymbol(
-            SimpleMarkerSymbolStyle.Circle,
-            Color.fromRgba(25, 132, 255, 255),
-            15.0f
+    var symbol = state.userSymbol
+    if (symbol == null) {
+        symbol = SimpleMarkerSymbol(
+            SimpleMarkerSymbolStyle.Triangle,
+            Color.fromRgba(42, 220, 185, 255),
+            20.0f
         )
+        state.userSymbol = symbol
         val graphic = Graphic(point, symbol)
         state.userOverlay.graphics.add(graphic)
         state.userGraphic = graphic
     } else {
-        existing.geometry = point
+        state.userGraphic?.geometry = point
+    }
+
+    heading?.takeIf { it.isFinite() }?.let {
+        symbol.angle = it
     }
 }
 
@@ -303,5 +319,5 @@ private fun toWgs84(point: Point?): Point? {
 }
 
 private const val WAYPOINT_ID = "waypointId"
-private const val INITIAL_SCALE = 9_000.0
-private const val RECENTER_SCALE = 4_000.0
+private const val INITIAL_SCALE = 7_500.0
+private const val RECENTER_SCALE = 3_500.0
