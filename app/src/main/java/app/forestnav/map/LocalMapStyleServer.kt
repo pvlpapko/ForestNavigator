@@ -214,8 +214,15 @@ object LocalMapStyleServer {
 
                 when (status) {
                     401, 403 -> throw FatalTileException("Mapbox token rejected: HTTP $status")
-                    400, 404, 410, 422 ->
-                        throw PermanentTileException("Mapbox tile unavailable: HTTP $status")
+                    400, 422 ->
+                        throw FatalTileException("Mapbox tile request rejected: HTTP $status")
+                    404 -> {
+                        // Do not create a permanent hole from a CDN/style miss.
+                        // Offline repair will retry this tile on later passes.
+                        last = "Mapbox tile temporarily unavailable: HTTP 404"
+                    }
+                    410 ->
+                        throw PermanentTileException("Mapbox tile permanently unavailable: HTTP 410")
                     429 -> {
                         last = "Mapbox HTTP 429"
                         val delay = c.getHeaderField("Retry-After")
