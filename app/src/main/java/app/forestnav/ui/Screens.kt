@@ -83,9 +83,9 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Esri World Imagery • спутниковые и аэрофотоснимки"
-                                MapLayer.TERRAIN -> "Esri World Topographic Map • дороги, леса, вода, подписи и рельеф"
-                                MapLayer.SATELLITE_TERRAIN -> "Esri Imagery + Hillshade + дороги и подписи"
+                                MapLayer.SATELLITE -> "Mapbox Satellite • HD спутниковые и аэрофотоснимки"
+                                MapLayer.TERRAIN -> "Mapbox Outdoors • тропы, дороги, леса, вода, подписи, горизонтали и рельеф"
+                                MapLayer.SATELLITE_TERRAIN -> "Mapbox Satellite Streets + Terrain RGB hillshade"
                                 else -> ""
                             }
                         } else {
@@ -947,13 +947,13 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Картографический модуль собран заново на ArcGIS/Esri: обычная карта — World Street Map, " +
-                "спутник — World Imagery, рельеф — World Topographic Map, комбинированный режим — Imagery + Hillshade + справочные слои. " +
-                "Онлайн-рендер и офлайн-загрузка используют один набор источников, но отдельные кэши."
+            "Картографический модуль собран заново на Mapbox: обычная карта — Streets v12, " +
+                "спутник — Satellite, рельеф — Outdoors v12 + Terrain RGB, комбинированный режим — Satellite Streets + Terrain RGB. " +
+                "Онлайн-рендер и офлайн-загрузка используют один набор источников, но отдельный кэш."
         )
         AssistChip(
             onClick = {},
-            label = { Text("ArcGIS/Esri + отдельный офлайн-кэш") },
+            label = { Text("Mapbox + отдельный офлайн-кэш") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 

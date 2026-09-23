@@ -11,10 +11,13 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 31
-        versionName = "1.1.0"
+        versionCode = 32
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "MAPBOX_TOKEN_A", "\"pk.\"")
+        buildConfigField("String", "MAPBOX_TOKEN_B", "\"eyJ1IjoicGhhcmdvcyIsImEiOiJjbXVkYWpkMjgwY2sxMnlxemh0cm1uY3Z6In0.\"")
+        buildConfigField("String", "MAPBOX_TOKEN_C", "\"fx9L7GBqPLIwUpqkhzh8Dg\"")
         vectorDrawables.useSupportLibrary = true
     }
 
