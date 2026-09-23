@@ -776,10 +776,9 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "Можно запускать несколько областей подряд: до трёх скачиваются одновременно, остальные ждут свободный слот. " +
-                    "Если отдельные тайлы не ответили, загрузка сама продолжит докачивание в фоне до полного завершения. " +
-                    "Спутник EOxCloudless доступен без токена; скачивается вся нативная детализация Sentinel-2 до z14 по выбранному радиусу. " +
-                    "Уже скачанная часть сразу работает офлайн и никогда не загружается повторно."
+                    "Офлайн-пакет сохраняет глобальный спутниковый слой VersaTiles до z12 и Mapterhorn DEM до z15. " +
+                    "Если отдельные тайлы временно не ответили, приложение само продолжит докачивание. " +
+                    "Детальная съёмка OpenAerialMap подставляется онлайн там, где она существует, и кэшируется при просмотре."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -799,8 +798,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             if (radius >= 50.0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Большая область: загрузка может занять заметно больше времени и места. " +
-                        "Для 50–100 км приложение автоматически снижает максимальный масштаб, чтобы размер оставался разумным.",
+                    "Большая область: полный 3D-рельеф до z15 может занять много времени и места. " +
+                        "Уже скачанные тайлы сохраняются и повторно не загружаются.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -957,8 +956,7 @@ private fun OfflineScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun SettingsScreen(vm: AppViewModel) {
-    var custom by remember { mutableStateOf(vm.customStyle()) }
+private fun SettingsScreen(@Suppress("UNUSED_PARAMETER") vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
 
@@ -982,18 +980,6 @@ private fun SettingsScreen(vm: AppViewModel) {
         )
 
         HorizontalDivider()
-
-        Text("Свой MapLibre style URL")
-        OutlinedTextField(
-            value = custom,
-            onValueChange = { custom = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("https://…/style.json") },
-            singleLine = true
-        )
-        Button(onClick = { vm.updateCustomStyle(custom) }) {
-            Text("Сохранить URL")
-        }
 
         HorizontalDivider()
 

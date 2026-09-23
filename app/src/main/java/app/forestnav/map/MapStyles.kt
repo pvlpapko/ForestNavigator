@@ -8,7 +8,7 @@ enum class MapLayer(val title: String) {
     RELIEF("Рельеф"),
     SATELLITE_TERRAIN("Спутник+рельеф"),
     THREE_D("3D спутник"),
-    THREE_D_TERRAIN("3D+рельеф"),
+    THREE_D_TERRAIN("3D"),
     CUSTOM("Своя карта")
 }
 
