@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "app.forestnav"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 36
         versionCode = 45
         versionName = "1.4.2"
