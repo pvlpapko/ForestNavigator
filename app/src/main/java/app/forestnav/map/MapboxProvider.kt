@@ -20,7 +20,7 @@ internal enum class MapboxSource(
 }
 
 internal object MapboxProvider {
-    fun token(): String = BuildConfig.MAPBOX_ACCESS_TOKEN.trim()
+    fun token(): String = (BuildConfig.MAPBOX_TOKEN_A + BuildConfig.MAPBOX_TOKEN_B + BuildConfig.MAPBOX_TOKEN_C).trim()
 
     fun hasToken(): Boolean = token().startsWith("pk.") && token().length > 20
 
