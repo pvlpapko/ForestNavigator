@@ -85,16 +85,16 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Mapbox Satellite • HD по всей выбранной области, без снижения качества к краям"
-                                MapLayer.RELIEF -> "Рельеф • исходный вариант: Mapbox Outdoors + Terrain RGB hillshade"
-                                MapLayer.SATELLITE_TERRAIN -> "Спутник+рельеф • спутниковая база в том же HD по всей выбранной области"
-                                MapLayer.THREE_D -> "3D спутник • HD спутник + DEM; наклон до горизонта и вращение"
-                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • та же спутниковая карта, что в 3D, + усиленный рельеф DEM"
+                                MapLayer.SATELLITE -> "EOxCloudless 2025 • Sentinel-2, без токена и API-ключа"
+                                MapLayer.RELIEF -> "Рельеф • EOX Terrain + AWS Terrarium, без токена"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник+рельеф • EOxCloudless 2025 + AWS Terrarium"
+                                MapLayer.THREE_D -> "3D спутник • EOxCloudless 2025 + AWS Terrarium DEM"
+                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • та же EOX-спутниковая карта + усиленный AWS DEM-рельеф"
                                 else -> ""
                             }
                         } else {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
+                                MapLayer.SATELLITE -> "Спутник: EOxCloudless 2025"
                                 MapLayer.RELIEF -> "Топография + теневой рельеф"
                                 MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
                                 MapLayer.THREE_D -> "3D спутник"
@@ -843,7 +843,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
                     "Можно запускать несколько областей подряд: до трёх скачиваются одновременно, остальные ждут свободный слот. " +
                     "Если отдельные тайлы не ответили, загрузка сама продолжит докачивание в фоне до полного завершения. " +
-                    "Для «Спутник» и «Спутник+рельеф» HD-детализация теперь скачивается по всему выбранному радиусу, поэтому большие области могут занимать много места и времени. " +
+                    "Спутник EOxCloudless доступен без токена; скачивается вся нативная детализация Sentinel-2 до z14 по выбранному радиусу. " +
                     "Уже скачанная часть сразу работает офлайн и никогда не загружается повторно."
             )
 
@@ -1036,16 +1036,15 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
-                "рельеф — Outdoors v12 + Terrain RGB hillshade, спутник+рельеф — Satellite Streets + Terrain RGB, " +
-                "3D спутник — Satellite Streets + DEM, 3D+рельеф — та же Satellite Streets + DEM с усиленным hillshade-рельефом. " +
-                "Спутник и спутник+рельеф офлайн сохраняются в HD по всему выбранному радиусу. " +
-                "В 3D доступны вращение, жест наклона до 85° и кнопки «Походный»/«Горизонт». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
-                "а недостающие тайлы подгружают только при наличии сети."
+            "Картографический модуль переведён с Mapbox-тайлов на открытые источники без API-ключей: " +
+                "карта — EOX OpenStreetMap, спутник — EOxCloudless 2025 (Sentinel-2), " +
+                "рельеф — EOX Terrain + AWS Terrarium, спутник+рельеф — EOxCloudless + AWS Terrarium. " +
+                "3D использует те же EOX/AWS данные. В 3D доступны вращение, наклон до 85° и кнопки «Походный»/«Горизонт». " +
+                "Скачанные области и кэш используются раньше сети."
         )
         AssistChip(
             onClick = {},
-            label = { Text("Mapbox + отдельный офлайн-кэш") },
+            label = { Text("EOX + AWS • без API-ключей") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
