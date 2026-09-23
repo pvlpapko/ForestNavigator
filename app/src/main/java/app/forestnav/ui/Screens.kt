@@ -85,11 +85,11 @@ fun MapScreen(vm: AppViewModel) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
-                                MapLayer.SATELLITE -> "Mapbox Satellite • HD спутниковые и аэрофотоснимки"
+                                MapLayer.SATELLITE -> "Mapbox Satellite • HD по всей выбранной области, без снижения качества к краям"
                                 MapLayer.RELIEF -> "Рельеф • исходный вариант: Mapbox Outdoors + Terrain RGB hillshade"
-                                MapLayer.SATELLITE_TERRAIN -> "Mapbox Satellite Streets + Terrain RGB hillshade"
-                                MapLayer.THREE_D -> "3D спутник • настоящий DEM-рельеф; доступен наклон до походного вида"
-                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • топографическая Outdoors + настоящий DEM-рельеф"
+                                MapLayer.SATELLITE_TERRAIN -> "Спутник+рельеф • спутниковая база в том же HD по всей выбранной области"
+                                MapLayer.THREE_D -> "3D спутник • HD спутник + DEM; наклон до горизонта и вращение"
+                                MapLayer.THREE_D_TERRAIN -> "3D+рельеф • Outdoors + DEM; наклон до горизонта и вращение"
                                 else -> ""
                             }
                         } else {
@@ -843,6 +843,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
                     "Можно запускать несколько областей подряд: до трёх скачиваются одновременно, остальные ждут свободный слот. " +
                     "Если отдельные тайлы не ответили, загрузка сама продолжит докачивание в фоне до полного завершения. " +
+                    "Для «Спутник» и «Спутник+рельеф» HD-детализация теперь скачивается по всему выбранному радиусу, поэтому большие области могут занимать много места и времени. " +
                     "Уже скачанная часть сразу работает офлайн и никогда не загружается повторно."
             )
 
@@ -1038,7 +1039,8 @@ private fun SettingsScreen(vm: AppViewModel) {
             "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
                 "рельеф — Outdoors v12 + Terrain RGB hillshade, спутник+рельеф — Satellite Streets + Terrain RGB, " +
                 "3D спутник — Satellite Streets + DEM, 3D+рельеф — Outdoors + DEM. " +
-                "В 3D доступен жест наклона до 85° и кнопка «Походный». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
+                "Спутник и спутник+рельеф офлайн сохраняются в HD по всему выбранному радиусу. " +
+                "В 3D доступны вращение, жест наклона до 85° и кнопки «Походный»/«Горизонт». Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
                 "а недостающие тайлы подгружают только при наличии сети."
         )
         AssistChip(

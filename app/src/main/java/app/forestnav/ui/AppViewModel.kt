@@ -211,14 +211,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val loc: Location = location.value ?: return
         val layer = _mapLayer.value
         val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-        val maxZoom = when {
-            radiusKm <= 2.0 -> 18.0
-            radiusKm <= 5.0 -> 17.0
-            radiusKm <= 10.0 -> 16.0
-            radiusKm <= 25.0 -> 15.0
-            radiusKm <= 50.0 -> 14.0
-            radiusKm <= 100.0 -> 13.0
-            else -> 12.0
+        // Satellite quality must not degrade with a larger radius.
+        // Pure Satellite uses 256 logical tiles with @2x imagery, so z18 is kept
+        // across the entire selected area. 512px style tiles need one additional
+        // logical zoom here because OfflineMapManager applies a -1 source offset.
+        val maxZoom = when (layer) {
+            MapLayer.SATELLITE -> 18.0
+            MapLayer.SATELLITE_TERRAIN,
+            MapLayer.THREE_D -> 19.0
+            MapLayer.THREE_D_TERRAIN -> 19.0
+            else -> when {
+                radiusKm <= 2.0 -> 18.0
+                radiusKm <= 5.0 -> 17.0
+                radiusKm <= 10.0 -> 16.0
+                radiusKm <= 25.0 -> 15.0
+                radiusKm <= 50.0 -> 14.0
+                radiusKm <= 100.0 -> 13.0
+                else -> 12.0
+            }
         }
         val minZoom = when {
             radiusKm >= 100.0 -> 7.0

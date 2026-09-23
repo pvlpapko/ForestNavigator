@@ -40,6 +40,26 @@ class OfflineMapManager(private val context: Context) {
     private data class Tile(val z: Int, val x: Int, val y: Int)
     private data class DownloadTask(val source: String, val tile: Tile)
 
+    /**
+     * Compact description of a rectangular slippy-tile range.
+     *
+     * HD satellite downloads can contain hundreds of thousands or even millions
+     * of tiles. Keeping every tile as a Kotlin object caused excessive heap use,
+     * so large regions are now streamed through bounded batches.
+     */
+    private data class TileRange(
+        val source: String,
+        val z: Int,
+        val x0: Int,
+        val x1: Int,
+        val y0: Int,
+        val y1: Int
+    ) {
+        val count: Long
+            get() = (x1.toLong() - x0.toLong() + 1L) *
+                (y1.toLong() - y0.toLong() + 1L)
+    }
+
     private class DownloadHandle {
         val cancelRequested = AtomicBoolean(false)
         val deletePartialOnCancel = AtomicBoolean(false)
@@ -75,6 +95,7 @@ class OfflineMapManager(private val context: Context) {
                     regionId = actualRegionId,
                     name = name,
                     layerTitle = layer.title,
+                    fatal = true,
                     error = "Для своей карты офлайн-загрузка пока не поддерживается"
                 )
             )
@@ -119,6 +140,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
+                        missingResources = (required - completed.get()).coerceAtLeast(0L),
                         active = active
                     )
                 )
@@ -127,6 +149,7 @@ class OfflineMapManager(private val context: Context) {
             try {
                 regionSlots.acquire()
                 regionSlotAcquired = true
+
                 if (!partial.exists() &&
                     finalDir.isDirectory &&
                     File(finalDir, INCOMPLETE_MARKER).isFile
@@ -150,163 +173,176 @@ class OfflineMapManager(private val context: Context) {
                     maxZoom = maxZoom
                 )
 
-                val allTasks = sources.flatMap { source ->
-                    val sourceSpec = MapboxProvider.sourceById(source)
-                    val zoomOffset = if (sourceSpec.tileSize == 512) 1 else 0
-                    val sourceMinZoom = (minZoom.toInt() - zoomOffset).coerceAtLeast(0)
-                    val sourceMaxZoom = minOf(
-                        maxZoom.toInt() - zoomOffset,
-                        LocalMapStyleServer.maxDownloadZoom(source)
-                    )
-                    if (sourceMaxZoom < sourceMinZoom) {
-                        emptyList()
-                    } else {
-                        buildTileList(
-                            latitude = latitude,
-                            longitude = longitude,
-                            radiusKm = radiusKm,
-                            minZoom = sourceMinZoom,
-                            maxZoom = sourceMaxZoom
-                        ).map { tile -> DownloadTask(source, tile) }
-                    }
-                }
+                val ranges = buildTileRanges(
+                    sources = sources,
+                    latitude = latitude,
+                    longitude = longitude,
+                    radiusKm = radiusKm,
+                    minZoom = minZoom.toInt(),
+                    maxZoom = maxZoom.toInt()
+                )
 
-                required = allTasks.size.toLong()
-                if (required == 0L) {
+                required = ranges.sumOf { it.count }
+                if (required <= 0L) {
                     throw IllegalStateException("Для выбранной области нет тайлов")
-                }
-                if (required > MAX_RESOURCES) {
-                    throw IllegalStateException(
-                        "Область слишком большая для выбранного масштаба: $required тайлов"
-                    )
-                }
-
-                val pending = ArrayList<DownloadTask>(allTasks.size)
-                allTasks.forEach { task ->
-                    val file = LocalMapStyleServer.tileFile(
-                        partial,
-                        task.source,
-                        task.tile.z,
-                        task.tile.x,
-                        task.tile.y
-                    )
-                    if (file.isFile && file.length() >= MIN_VALID_TILE_BYTES) {
-                        completed.incrementAndGet()
-                        bytes.addAndGet(file.length())
-                    } else {
-                        pending += task
-                    }
                 }
 
                 publish(force = true)
 
-                var remaining: List<DownloadTask> = pending
-                repeat(MAX_DOWNLOAD_ROUNDS) { round ->
-                    if (remaining.isEmpty()) return@repeat
+                for (range in ranges) {
                     checkNotCancelled(handle)
 
-                    if (round > 0) {
-                        sleepWithCancellation(retryRoundDelay(round), handle)
-                    }
+                    for (batch in batches(range)) {
+                        checkNotCancelled(handle)
 
-                    val failures = Collections.synchronizedList(mutableListOf<DownloadTask>())
-                    val fatalError = AtomicReference<Throwable?>(null)
-                    val pool = Executors.newFixedThreadPool(workerCountForRound(round)) { runnable ->
-                        Thread(runnable, "forest-offline-tile").apply { isDaemon = true }
-                    }
-                    handle.workerPool = pool
-                    val latch = CountDownLatch(remaining.size)
-
-                    remaining.forEach { task ->
-                        pool.execute {
-                            try {
-                                checkNotCancelled(handle)
-                                val file = LocalMapStyleServer.tileFile(
-                                    partial,
-                                    task.source,
-                                    task.tile.z,
-                                    task.tile.x,
-                                    task.tile.y
-                                )
-
-                                if (file.isFile && file.length() >= MIN_VALID_TILE_BYTES) {
-                                    completed.incrementAndGet()
-                                    bytes.addAndGet(file.length())
-                                } else {
-                                    val stored = LocalMapStyleServer.downloadTileTo(
-                                        source = task.source,
-                                        z = task.tile.z,
-                                        x = task.tile.x,
-                                        y = task.tile.y,
-                                        destination = file
-                                    )
-                                    completed.incrementAndGet()
-                                    bytes.addAndGet(stored)
-                                }
-                            } catch (_: LocalMapStyleServer.PermanentTileException) {
-                                skipped.incrementAndGet()
+                        val pending = ArrayList<DownloadTask>(batch.size)
+                        batch.forEach { task ->
+                            val file = LocalMapStyleServer.tileFile(
+                                partial,
+                                task.source,
+                                task.tile.z,
+                                task.tile.x,
+                                task.tile.y
+                            )
+                            if (file.isFile && file.length() >= MIN_VALID_TILE_BYTES) {
                                 completed.incrementAndGet()
-                            } catch (fatal: LocalMapStyleServer.FatalTileException) {
-                                fatalError.compareAndSet(null, fatal)
-                            } catch (_: InterruptedException) {
-                                // Cancellation is handled by the coordinator loop.
-                            } catch (_: Throwable) {
-                                if (!handle.cancelRequested.get()) failures += task
-                            } finally {
-                                latch.countDown()
+                                bytes.addAndGet(file.length())
+                            } else {
+                                pending += task
                             }
                         }
-                    }
 
-                    var lastCompleted = completed.get()
-                    var lastMovementAt = System.currentTimeMillis()
-
-                    while (!latch.await(PROGRESS_INTERVAL_MS, TimeUnit.MILLISECONDS)) {
-                        checkNotCancelled(handle)
                         publish()
 
-                        val nowCompleted = completed.get()
-                        if (nowCompleted != lastCompleted) {
-                            lastCompleted = nowCompleted
-                            lastMovementAt = System.currentTimeMillis()
-                        } else if (System.currentTimeMillis() - lastMovementAt >= ROUND_STALL_TIMEOUT_MS) {
-                            pool.shutdownNow()
-                            throw IllegalStateException(
-                                "Сеть перестала отвечать. Скачанная часть сохранена — повторите загрузку для продолжения."
+                        if (pending.isEmpty()) continue
+
+                        var remaining: List<DownloadTask> = pending
+
+                        repeat(MAX_DOWNLOAD_ROUNDS) { round ->
+                            if (remaining.isEmpty()) return@repeat
+                            checkNotCancelled(handle)
+
+                            if (round > 0) {
+                                sleepWithCancellation(retryRoundDelay(round), handle)
+                            }
+
+                            val failures =
+                                Collections.synchronizedList(mutableListOf<DownloadTask>())
+                            val fatalError = AtomicReference<Throwable?>(null)
+                            val pool =
+                                Executors.newFixedThreadPool(workerCountForRound(round)) { runnable ->
+                                    Thread(runnable, "forest-offline-tile").apply {
+                                        isDaemon = true
+                                    }
+                                }
+                            handle.workerPool = pool
+                            val latch = CountDownLatch(remaining.size)
+
+                            remaining.forEach { task ->
+                                pool.execute {
+                                    try {
+                                        checkNotCancelled(handle)
+                                        val file = LocalMapStyleServer.tileFile(
+                                            partial,
+                                            task.source,
+                                            task.tile.z,
+                                            task.tile.x,
+                                            task.tile.y
+                                        )
+
+                                        if (file.isFile &&
+                                            file.length() >= MIN_VALID_TILE_BYTES
+                                        ) {
+                                            completed.incrementAndGet()
+                                            bytes.addAndGet(file.length())
+                                        } else {
+                                            val stored = LocalMapStyleServer.downloadTileTo(
+                                                source = task.source,
+                                                z = task.tile.z,
+                                                x = task.tile.x,
+                                                y = task.tile.y,
+                                                destination = file
+                                            )
+                                            completed.incrementAndGet()
+                                            bytes.addAndGet(stored)
+                                        }
+                                    } catch (_: LocalMapStyleServer.PermanentTileException) {
+                                        // Only a provider-declared permanently removed tile
+                                        // may be skipped and still allow the area to complete.
+                                        skipped.incrementAndGet()
+                                        completed.incrementAndGet()
+                                    } catch (fatal: LocalMapStyleServer.FatalTileException) {
+                                        fatalError.compareAndSet(null, fatal)
+                                    } catch (_: InterruptedException) {
+                                        // Cancellation is handled by the coordinator loop.
+                                    } catch (_: Throwable) {
+                                        if (!handle.cancelRequested.get()) {
+                                            failures += task
+                                        }
+                                    } finally {
+                                        latch.countDown()
+                                    }
+                                }
+                            }
+
+                            var lastCompleted = completed.get()
+                            var lastMovementAt = System.currentTimeMillis()
+
+                            while (!latch.await(
+                                    PROGRESS_INTERVAL_MS,
+                                    TimeUnit.MILLISECONDS
+                                )
+                            ) {
+                                checkNotCancelled(handle)
+                                publish()
+
+                                val nowCompleted = completed.get()
+                                if (nowCompleted != lastCompleted) {
+                                    lastCompleted = nowCompleted
+                                    lastMovementAt = System.currentTimeMillis()
+                                } else if (
+                                    System.currentTimeMillis() - lastMovementAt >=
+                                    ROUND_STALL_TIMEOUT_MS
+                                ) {
+                                    pool.shutdownNow()
+                                    throw IllegalStateException(
+                                        "Сеть перестала отвечать. Скачанная часть сохранена, автодокачивание продолжится."
+                                    )
+                                }
+                            }
+
+                            pool.shutdown()
+                            pool.awaitTermination(2L, TimeUnit.SECONDS)
+                            handle.workerPool = null
+
+                            fatalError.get()?.let { throw it }
+                            remaining = failures.toList()
+                        }
+
+                        if (remaining.isNotEmpty()) {
+                            val left = (required - completed.get()).coerceAtLeast(
+                                remaining.size.toLong()
                             )
+                            onProgress(
+                                DownloadProgress(
+                                    regionId = actualRegionId,
+                                    name = name,
+                                    layerTitle = layer.title,
+                                    completedResources = completed.get(),
+                                    requiredResources = required,
+                                    bytes = bytes.get(),
+                                    skippedResources = skipped.get(),
+                                    missingResources = left,
+                                    needsRetry = true,
+                                    active = true
+                                )
+                            )
+                            return@submit
                         }
                     }
-
-                    pool.shutdown()
-                    pool.awaitTermination(2L, TimeUnit.SECONDS)
-                    handle.workerPool = null
-
-                    fatalError.get()?.let { throw it }
-                    remaining = failures.toList()
                 }
 
                 checkNotCancelled(handle)
-
-                // Never report a transiently incomplete region as finished. Keep it in
-                // .partial form (already usable by the local tile proxy) and ask the
-                // foreground service to automatically repair only the missing tiles.
-                if (remaining.isNotEmpty()) {
-                    onProgress(
-                        DownloadProgress(
-                            regionId = actualRegionId,
-                            name = name,
-                            layerTitle = layer.title,
-                            completedResources = completed.get(),
-                            requiredResources = required,
-                            bytes = bytes.get(),
-                            skippedResources = skipped.get(),
-                            missingResources = remaining.size.toLong(),
-                            needsRetry = true,
-                            active = true
-                        )
-                    )
-                    return@submit
-                }
 
                 if (finalDir.exists()) finalDir.deleteRecursively()
                 if (!partial.renameTo(finalDir)) {
@@ -315,20 +351,17 @@ class OfflineMapManager(private val context: Context) {
                 }
                 File(finalDir, INCOMPLETE_MARKER).delete()
 
-                // Final integrity pass: every downloadable resource must exist before
-                // the region is marked complete. Provider-declared 404/410 resources
-                // are the only exception and are counted in skippedResources.
-                val validDownloaded = countValidDownloaded(finalDir, allTasks)
+                val validDownloaded = countValidDownloaded(finalDir, ranges)
                 val expectedDownloaded = required - skipped.get()
+
                 if (validDownloaded < expectedDownloaded) {
-                    // A file disappeared or an atomic move failed. Re-open the final
-                    // directory as partial so the next automatic repair pass fixes it.
                     val repair = File(root, ".partial-$actualRegionId")
                     if (repair.exists()) repair.deleteRecursively()
                     if (!finalDir.renameTo(repair)) {
                         finalDir.copyRecursively(repair, overwrite = true)
                         finalDir.deleteRecursively()
                     }
+
                     onProgress(
                         DownloadProgress(
                             regionId = actualRegionId,
@@ -338,7 +371,8 @@ class OfflineMapManager(private val context: Context) {
                             requiredResources = required,
                             bytes = bytes.get(),
                             skippedResources = skipped.get(),
-                            missingResources = (expectedDownloaded - validDownloaded).coerceAtLeast(0L),
+                            missingResources =
+                                (expectedDownloaded - validDownloaded).coerceAtLeast(0L),
                             needsRetry = true,
                             active = true
                         )
@@ -355,7 +389,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
-                        missingResources = 0,
+                        missingResources = 0L,
                         complete = true
                     )
                 )
@@ -371,6 +405,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
+                        missingResources = (required - completed.get()).coerceAtLeast(0L),
                         cancelled = true
                     )
                 )
@@ -385,6 +420,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
+                        missingResources = (required - completed.get()).coerceAtLeast(0L),
                         fatal = t is LocalMapStyleServer.FatalTileException,
                         error = t.message ?: "Ошибка загрузки"
                     )
@@ -472,19 +508,97 @@ class OfflineMapManager(private val context: Context) {
         }
     }
 
+    private fun buildTileRanges(
+        sources: List<String>,
+        latitude: Double,
+        longitude: Double,
+        radiusKm: Double,
+        minZoom: Int,
+        maxZoom: Int
+    ): List<TileRange> {
+        val result = ArrayList<TileRange>()
+
+        sources.forEach { source ->
+            val sourceSpec = MapboxProvider.sourceById(source)
+            val zoomOffset = if (sourceSpec.tileSize == 512) 1 else 0
+            val sourceMinZoom = (minZoom - zoomOffset).coerceAtLeast(0)
+            val sourceMaxZoom = minOf(
+                maxZoom - zoomOffset,
+                LocalMapStyleServer.maxDownloadZoom(source)
+            )
+
+            if (sourceMaxZoom < sourceMinZoom) return@forEach
+
+            val latDelta = radiusKm / 111.32
+            val lonDelta = radiusKm /
+                (111.32 * cos(Math.toRadians(latitude)).coerceAtLeast(0.2))
+
+            val north = (latitude + latDelta).coerceIn(-85.0, 85.0)
+            val south = (latitude - latDelta).coerceIn(-85.0, 85.0)
+            val west = (longitude - lonDelta).coerceIn(-180.0, 180.0)
+            val east = (longitude + lonDelta).coerceIn(-180.0, 180.0)
+
+            for (z in sourceMinZoom..sourceMaxZoom) {
+                val n = 1 shl z
+                val x0 = lonToTileX(west, z).coerceIn(0, n - 1)
+                val x1 = lonToTileX(east, z).coerceIn(0, n - 1)
+                val y0 = latToTileY(north, z).coerceIn(0, n - 1)
+                val y1 = latToTileY(south, z).coerceIn(0, n - 1)
+
+                if (x1 >= x0 && y1 >= y0) {
+                    result += TileRange(source, z, x0, x1, y0, y1)
+                }
+            }
+        }
+
+        return result
+    }
+
+    private fun batches(range: TileRange): Sequence<List<DownloadTask>> = sequence {
+        var batch = ArrayList<DownloadTask>(TILE_BATCH_SIZE)
+
+        for (x in range.x0..range.x1) {
+            for (y in range.y0..range.y1) {
+                batch += DownloadTask(
+                    source = range.source,
+                    tile = Tile(range.z, x, y)
+                )
+
+                if (batch.size >= TILE_BATCH_SIZE) {
+                    yield(batch)
+                    batch = ArrayList(TILE_BATCH_SIZE)
+                }
+            }
+        }
+
+        if (batch.isNotEmpty()) yield(batch)
+    }
+
     private fun countValidDownloaded(
         regionDir: File,
-        tasks: List<DownloadTask>
-    ): Long = tasks.count { task ->
-        val file = LocalMapStyleServer.tileFile(
-            regionDir,
-            task.source,
-            task.tile.z,
-            task.tile.x,
-            task.tile.y
-        )
-        file.isFile && file.length() >= MIN_VALID_TILE_BYTES
-    }.toLong()
+        ranges: List<TileRange>
+    ): Long {
+        var valid = 0L
+
+        ranges.forEach { range ->
+            for (x in range.x0..range.x1) {
+                for (y in range.y0..range.y1) {
+                    val file = LocalMapStyleServer.tileFile(
+                        regionDir,
+                        range.source,
+                        range.z,
+                        x,
+                        y
+                    )
+                    if (file.isFile && file.length() >= MIN_VALID_TILE_BYTES) {
+                        valid++
+                    }
+                }
+            }
+        }
+
+        return valid
+    }
 
     private fun writePartialMetadata(
         partial: File,
@@ -536,41 +650,6 @@ class OfflineMapManager(private val context: Context) {
         }
     }
 
-    private fun buildTileList(
-        latitude: Double,
-        longitude: Double,
-        radiusKm: Double,
-        minZoom: Int,
-        maxZoom: Int
-    ): List<Tile> {
-        val latDelta = radiusKm / 111.32
-        val lonDelta = radiusKm /
-            (111.32 * cos(Math.toRadians(latitude)).coerceAtLeast(0.2))
-
-        val north = (latitude + latDelta).coerceIn(-85.0, 85.0)
-        val south = (latitude - latDelta).coerceIn(-85.0, 85.0)
-        val west = (longitude - lonDelta).coerceIn(-180.0, 180.0)
-        val east = (longitude + lonDelta).coerceIn(-180.0, 180.0)
-
-        val result = ArrayList<Tile>()
-
-        for (z in minZoom..maxZoom) {
-            val n = 1 shl z
-            val x0 = lonToTileX(west, z).coerceIn(0, n - 1)
-            val x1 = lonToTileX(east, z).coerceIn(0, n - 1)
-            val y0 = latToTileY(north, z).coerceIn(0, n - 1)
-            val y1 = latToTileY(south, z).coerceIn(0, n - 1)
-
-            for (x in x0..x1) {
-                for (y in y0..y1) {
-                    result += Tile(z, x, y)
-                }
-            }
-        }
-
-        return result
-    }
-
     private fun lonToTileX(lon: Double, zoom: Int): Int {
         val n = (1 shl zoom).toDouble()
         return floor((lon + 180.0) / 360.0 * n).toInt()
@@ -586,7 +665,7 @@ class OfflineMapManager(private val context: Context) {
     companion object {
         private const val MAX_CONCURRENT_REGIONS = 3
         private const val MAX_DOWNLOAD_ROUNDS = 6
-        private const val MAX_RESOURCES = 60_000L
+        private const val TILE_BATCH_SIZE = 8_000
         private const val MIN_VALID_TILE_BYTES = 128L
         private const val PROGRESS_INTERVAL_MS = 250L
         private const val ROUND_STALL_TIMEOUT_MS = 120_000L

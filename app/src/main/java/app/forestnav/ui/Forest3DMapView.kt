@@ -221,6 +221,16 @@ fun Forest3DMapView(
             ) {
                 Text("Походный", style = MaterialTheme.typography.labelSmall)
             }
+
+            FilledTonalButton(
+                onClick = { set3DPitch(mapView, HORIZON_PITCH, keepZoom = false) },
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .widthIn(min = 92.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text("Горизонт", style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -386,5 +396,6 @@ private fun create3DWaypointIcon(
 
 private const val TOP_PITCH = 0.0
 private const val DEFAULT_PITCH = 55.0
-private const val WALKING_PITCH = 78.0
+private const val WALKING_PITCH = 72.0
+private const val HORIZON_PITCH = 85.0
 private const val MAX_PITCH = 85.0
