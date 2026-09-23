@@ -27,6 +27,7 @@ class OfflineMapManager(private val context: Context) {
         val requiredResources: Long = 0,
         val bytes: Long = 0,
         val skippedResources: Long = 0,
+        val missingResources: Long = 0,
         val complete: Boolean = false,
         val active: Boolean = false,
         val cancelled: Boolean = false,
@@ -123,7 +124,18 @@ class OfflineMapManager(private val context: Context) {
             try {
                 regionSlots.acquire()
                 regionSlotAcquired = true
+                if (!partial.exists() &&
+                    finalDir.isDirectory &&
+                    File(finalDir, INCOMPLETE_MARKER).isFile
+                ) {
+                    if (!finalDir.renameTo(partial)) {
+                        finalDir.copyRecursively(partial, overwrite = true)
+                        finalDir.deleteRecursively()
+                    }
+                }
+
                 partial.mkdirs()
+                File(partial, INCOMPLETE_MARKER).delete()
                 writePartialMetadata(
                     partial = partial,
                     name = name,
@@ -267,23 +279,27 @@ class OfflineMapManager(private val context: Context) {
 
                 checkNotCancelled(handle)
 
-                if (remaining.isNotEmpty()) {
-                    val tolerated = toleratedFailureCount(required)
-                    if (remaining.size.toLong() <= tolerated) {
-                        skipped.addAndGet(remaining.size.toLong())
-                        completed.addAndGet(remaining.size.toLong())
-                        remaining = emptyList()
-                    } else {
-                        throw IllegalStateException(
-                            "Не удалось скачать ${remaining.size} тайлов. Уже скачанная часть сохранена — повторите загрузку для продолжения."
-                        )
-                    }
+                // A few transiently unavailable tiles must never invalidate the whole area.
+                // Finalize the region so all downloaded tiles are immediately usable, remember
+                // the missing count, and keep the job metadata so a later launch can repair only
+                // the missing files.
+                val missingResources = remaining.size.toLong()
+                if (missingResources > 0L) {
+                    skipped.addAndGet(missingResources)
+                    completed.addAndGet(missingResources)
                 }
 
                 if (finalDir.exists()) finalDir.deleteRecursively()
                 if (!partial.renameTo(finalDir)) {
                     partial.copyRecursively(finalDir, overwrite = true)
                     partial.deleteRecursively()
+                }
+
+                val incompleteMarker = File(finalDir, INCOMPLETE_MARKER)
+                if (missingResources > 0L) {
+                    incompleteMarker.writeText(missingResources.toString(), Charsets.UTF_8)
+                } else {
+                    incompleteMarker.delete()
                 }
 
                 onProgress(
@@ -295,6 +311,7 @@ class OfflineMapManager(private val context: Context) {
                         requiredResources = required,
                         bytes = bytes.get(),
                         skippedResources = skipped.get(),
+                        missingResources = missingResources,
                         complete = true
                     )
                 )
@@ -355,6 +372,10 @@ class OfflineMapManager(private val context: Context) {
     fun hasPartial(regionId: Long): Boolean =
         File(root, ".partial-$regionId").isDirectory
 
+    fun hasResumable(regionId: Long): Boolean =
+        hasPartial(regionId) ||
+            File(File(root, regionId.toString()), INCOMPLETE_MARKER).isFile
+
     fun listRegions(
         onResult: (List<Pair<Long, String>>) -> Unit,
         onError: (String) -> Unit
@@ -377,7 +398,12 @@ class OfflineMapManager(private val context: Context) {
                         .orEmpty()
                         .ifBlank { "Офлайн-область #$id" }
 
-                    id to if (partial) "⏸ $baseName" else baseName
+                    val incomplete = !partial && File(dir, INCOMPLETE_MARKER).isFile
+                    id to when {
+                        partial -> "⏸ $baseName"
+                        incomplete -> "◐ $baseName"
+                        else -> baseName
+                    }
                 }
                 .sortedByDescending { it.first }
         }.onSuccess(onResult).onFailure {
@@ -420,17 +446,20 @@ class OfflineMapManager(private val context: Context) {
 
     private fun workerCountForRound(round: Int): Int = when (round) {
         0 -> 10
-        1 -> 6
-        else -> 3
+        1 -> 7
+        2 -> 5
+        3 -> 3
+        4 -> 2
+        else -> 1
     }
 
     private fun retryRoundDelay(round: Int): Long = when (round) {
         1 -> 1_000L
-        else -> 2_500L
+        2 -> 2_000L
+        3 -> 4_000L
+        4 -> 7_000L
+        else -> 10_000L
     }
-
-    private fun toleratedFailureCount(required: Long): Long =
-        minOf(MAX_TOLERATED_MISSING, maxOf(2L, required / 500L))
 
     private fun sleepWithCancellation(durationMs: Long, handle: DownloadHandle) {
         var remaining = durationMs
@@ -497,11 +526,11 @@ class OfflineMapManager(private val context: Context) {
 
     companion object {
         private const val MAX_CONCURRENT_REGIONS = 3
-        private const val MAX_DOWNLOAD_ROUNDS = 3
+        private const val MAX_DOWNLOAD_ROUNDS = 6
         private const val MAX_RESOURCES = 60_000L
-        private const val MAX_TOLERATED_MISSING = 25L
         private const val MIN_VALID_TILE_BYTES = 128L
         private const val PROGRESS_INTERVAL_MS = 250L
-        private const val ROUND_STALL_TIMEOUT_MS = 45_000L
+        private const val ROUND_STALL_TIMEOUT_MS = 120_000L
+        private const val INCOMPLETE_MARKER = "incomplete.txt"
     }
 }

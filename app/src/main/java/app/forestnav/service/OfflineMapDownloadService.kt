@@ -131,7 +131,7 @@ class OfflineMapDownloadService : Service() {
 
     private fun chooseResumeJob(requested: JobSpec): JobSpec {
         val candidates = loadKnownJobs()
-            .filter { it.regionId != requested.regionId && manager.hasPartial(it.regionId) }
+            .filter { it.regionId != requested.regionId && manager.hasResumable(it.regionId) }
             .sortedByDescending { it.regionId }
 
         val previous = candidates.firstOrNull { sameArea(it, requested) } ?: return requested
@@ -161,14 +161,26 @@ class OfflineMapDownloadService : Service() {
         progress: OfflineMapManager.DownloadProgress
     ) {
         if (runningJobs.remove(spec.regionId) == null) return
-        clearJob(spec.regionId)
+        if (progress.missingResources > 0L) {
+            saveJob(spec, active = false)
+        } else {
+            clearJob(spec.regionId)
+        }
 
-        val skippedText = if (progress.skippedResources > 0L) {
-            " • пропущено ${progress.skippedResources}"
-        } else ""
+        val skippedText = when {
+            progress.missingResources > 0L ->
+                " • осталось докачать ${progress.missingResources}"
+            progress.skippedResources > 0L ->
+                " • недоступно ${progress.skippedResources}"
+            else -> ""
+        }
         notifyTerminal(
             id = terminalNotificationId(spec.regionId),
-            title = "Карта скачана",
+            title = if (progress.missingResources > 0L) {
+                "Карта доступна офлайн"
+            } else {
+                "Карта скачана"
+            },
             text = "${spec.layer.title}: ${progress.completedResources} тайлов$skippedText"
         )
         updateAggregateNotification()

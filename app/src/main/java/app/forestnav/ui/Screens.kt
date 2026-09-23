@@ -78,21 +78,24 @@ fun MapScreen(vm: AppViewModel) {
 
                 if (layer == MapLayer.SATELLITE ||
                     layer == MapLayer.TERRAIN ||
-                    layer == MapLayer.SATELLITE_TERRAIN
+                    layer == MapLayer.SATELLITE_TERRAIN ||
+                    layer == MapLayer.THREE_D
                 ) {
                     Text(
                         if (vm.highDetailMapsEnabled()) {
                             when (layer) {
                                 MapLayer.SATELLITE -> "Mapbox Satellite • HD спутниковые и аэрофотоснимки"
-                                MapLayer.TERRAIN -> "Mapbox Outdoors • тропы, дороги, леса, вода, подписи, горизонтали и рельеф"
+                                MapLayer.TERRAIN -> "Топографическая • Mapbox Outdoors: тропы, дороги, леса, вода, подписи и горизонтали"
                                 MapLayer.SATELLITE_TERRAIN -> "Mapbox Satellite Streets + Terrain RGB hillshade"
+                                MapLayer.THREE_D -> "3D • спутник + настоящий DEM-рельеф; карту можно наклонять и вращать"
                                 else -> ""
                             }
                         } else {
                             when (layer) {
                                 MapLayer.SATELLITE -> "Спутник: основной HD-источник + резервный"
-                                MapLayer.TERRAIN -> "Рельеф: топография + теневой рельеф"
+                                MapLayer.TERRAIN -> "Топографическая карта"
                                 MapLayer.SATELLITE_TERRAIN -> "Спутник + теневой рельеф"
+                                MapLayer.THREE_D -> "3D-рельеф"
                                 else -> ""
                             }
                         },
@@ -149,28 +152,43 @@ fun MapScreen(vm: AppViewModel) {
                         )
                     }
                 } else {
-                    ForestMapView(
-                        modifier = Modifier.fillMaxSize(),
-                        location = location!!,
-                        heading = heading,
-                        waypoints = waypoints,
-                        styleUrl = vm.styleUrl(online),
-                        recenterToken = recenterToken,
-                        pointPlacementEnabled = pointPlacementMode,
-                        onMapClick = { lat, lon ->
-                            pendingMapPoint = lat to lon
-                            pointPlacementMode = false
-                        },
-                        onMapLongPress = { lat, lon ->
-                            pendingMapPoint = lat to lon
-                            pointPlacementMode = false
-                        },
-                        onWaypointClick = { waypoint ->
-                            selectedMapWaypoint = waypoint
-                            pointPlacementMode = false
-                        },
-                        onMapScaleChanged = { mapScaleMeters = it }
-                    )
+                    val mapClick: (Double, Double) -> Unit = { lat, lon ->
+                        pendingMapPoint = lat to lon
+                        pointPlacementMode = false
+                    }
+                    val waypointClick: (Waypoint) -> Unit = { waypoint ->
+                        selectedMapWaypoint = waypoint
+                        pointPlacementMode = false
+                    }
+
+                    if (layer == MapLayer.THREE_D) {
+                        Forest3DMapView(
+                            modifier = Modifier.fillMaxSize(),
+                            location = location!!,
+                            heading = heading,
+                            waypoints = waypoints,
+                            recenterToken = recenterToken,
+                            pointPlacementEnabled = pointPlacementMode,
+                            onMapClick = mapClick,
+                            onMapLongPress = mapClick,
+                            onWaypointClick = waypointClick,
+                            onMapScaleChanged = { mapScaleMeters = it }
+                        )
+                    } else {
+                        ForestMapView(
+                            modifier = Modifier.fillMaxSize(),
+                            location = location!!,
+                            heading = heading,
+                            waypoints = waypoints,
+                            styleUrl = vm.styleUrl(online),
+                            recenterToken = recenterToken,
+                            pointPlacementEnabled = pointPlacementMode,
+                            onMapClick = mapClick,
+                            onMapLongPress = mapClick,
+                            onWaypointClick = waypointClick,
+                            onMapScaleChanged = { mapScaleMeters = it }
+                        )
+                    }
                 }
 
                 if (location != null) {
@@ -903,10 +921,13 @@ private fun OfflineScreen(vm: AppViewModel) {
 
                                     p.complete -> {
                                         Text(
-                                            if (p.skippedResources > 0L) {
-                                                "Готово. Недоступных тайлов пропущено: ${p.skippedResources}."
-                                            } else {
-                                                "Готово — область доступна офлайн."
+                                            when {
+                                                p.missingResources > 0L ->
+                                                    "Область уже работает офлайн. Осталось докачать: ${p.missingResources} тайлов; повторный запуск этой же области продолжит только их."
+                                                p.skippedResources > 0L ->
+                                                    "Готово. Недоступных у провайдера тайлов пропущено: ${p.skippedResources}."
+                                                else ->
+                                                    "Готово — область доступна офлайн."
                                             },
                                             color = MaterialTheme.colorScheme.primary,
                                             style = MaterialTheme.typography.bodySmall
@@ -998,9 +1019,10 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Картографический модуль собран заново на Mapbox: обычная карта — Streets v12, " +
-                "спутник — Satellite, рельеф — Outdoors v12 + Terrain RGB, комбинированный режим — Satellite Streets + Terrain RGB. " +
-                "Онлайн-рендер и офлайн-загрузка используют один набор источников, но отдельный кэш."
+            "Картографический модуль: обычная карта — Streets v12, спутник — Satellite, " +
+                "топографическая — Outdoors v12, спутник+рельеф — Satellite Streets + Terrain RGB, " +
+                "3D — спутник + настоящий DEM-рельеф. Все 2D-режимы сначала используют локальный кэш и скачанные области, " +
+                "а недостающие тайлы подгружают только при наличии сети."
         )
         AssistChip(
             onClick = {},

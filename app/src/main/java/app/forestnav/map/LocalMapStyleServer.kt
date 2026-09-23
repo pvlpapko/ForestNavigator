@@ -73,11 +73,25 @@ object LocalMapStyleServer {
     fun terrainUrl(): String = baseUrl("style/terrain.json")
     fun combinedUrl(): String = baseUrl("style/combined.json")
 
+    /**
+     * True 3D terrain style for the Mapbox v11 renderer.
+     * Both the satellite raster and DEM point to this local proxy, so downloaded,
+     * partially downloaded and normal runtime-cache tiles are reused before network.
+     */
+    fun threeDStyleJson(): String = local3D()
+
     fun sourcesFor(layer: MapLayer): List<String> = when (layer) {
         MapLayer.MAP -> listOf(MapboxSource.STREETS.id)
         MapLayer.SATELLITE -> listOf(MapboxSource.SATELLITE.id)
-        MapLayer.TERRAIN -> listOf(MapboxSource.OUTDOORS.id, MapboxSource.TERRAIN_RGB.id)
-        MapLayer.SATELLITE_TERRAIN -> listOf(MapboxSource.SATELLITE_STREETS.id, MapboxSource.TERRAIN_RGB.id)
+        MapLayer.TERRAIN -> listOf(MapboxSource.OUTDOORS.id)
+        MapLayer.SATELLITE_TERRAIN -> listOf(
+            MapboxSource.SATELLITE_STREETS.id,
+            MapboxSource.TERRAIN_RGB.id
+        )
+        MapLayer.THREE_D -> listOf(
+            MapboxSource.SATELLITE_STREETS.id,
+            MapboxSource.TERRAIN_RGB.id
+        )
         MapLayer.CUSTOM -> emptyList()
     }
 
@@ -114,7 +128,7 @@ object LocalMapStyleServer {
         when {
             path == "style/map.json" -> sendJson(client, localSingle(MapboxSource.STREETS))
             path == "style/satellite.json" -> sendJson(client, localSingle(MapboxSource.SATELLITE))
-            path == "style/terrain.json" -> sendJson(client, localTerrain())
+            path == "style/terrain.json" -> sendJson(client, localSingle(MapboxSource.OUTDOORS))
             path == "style/combined.json" -> sendJson(client, localCombined())
             path.startsWith("tile/") -> serveTile(client, path)
             else -> sendStatus(client, 404, "Not Found")
@@ -277,11 +291,59 @@ object LocalMapStyleServer {
         {"version":8,"sources":{"${source.id}":{"type":"raster","tiles":["${localTemplate(source)}"],"scheme":"xyz","tileSize":${source.tileSize},"minzoom":0,"maxzoom":${source.maxZoom}}},"layers":[{"id":"${source.id}","type":"raster","source":"${source.id}"}]}
     """.trimIndent()
 
-    private fun localTerrain(): String {
-        val base = MapboxSource.OUTDOORS
+    private fun local3D(): String {
+        val base = MapboxSource.SATELLITE_STREETS
         val dem = MapboxSource.TERRAIN_RGB
         return """
-            {"version":8,"sources":{"${base.id}":{"type":"raster","tiles":["${localTemplate(base)}"],"scheme":"xyz","tileSize":${base.tileSize},"minzoom":0,"maxzoom":${base.maxZoom}},"${dem.id}":{"type":"raster-dem","tiles":["${localTemplate(dem)}"],"scheme":"xyz","tileSize":${dem.tileSize},"minzoom":0,"maxzoom":${dem.maxZoom},"encoding":"mapbox"}},"layers":[{"id":"outdoors","type":"raster","source":"${base.id}"},{"id":"terrain-hillshade","type":"hillshade","source":"${dem.id}","paint":{"hillshade-exaggeration":0.56}}]}
+            {
+              "version": 8,
+              "name": "Forest Navigator 3D",
+              "sources": {
+                "${base.id}": {
+                  "type": "raster",
+                  "tiles": ["${localTemplate(base)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${base.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${base.maxZoom}
+                },
+                "${dem.id}": {
+                  "type": "raster-dem",
+                  "tiles": ["${localTemplate(dem)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${dem.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${dem.maxZoom},
+                  "encoding": "mapbox"
+                }
+              },
+              "terrain": {
+                "source": "${dem.id}",
+                "exaggeration": 1.25
+              },
+              "layers": [
+                {
+                  "id": "satellite-streets",
+                  "type": "raster",
+                  "source": "${base.id}",
+                  "paint": {
+                    "raster-opacity": 1.0,
+                    "raster-resampling": "linear"
+                  }
+                },
+                {
+                  "id": "terrain-hillshade",
+                  "type": "hillshade",
+                  "source": "${dem.id}",
+                  "paint": {
+                    "hillshade-exaggeration": 0.28,
+                    "hillshade-shadow-color": "#221b17",
+                    "hillshade-highlight-color": "#fff8e9",
+                    "hillshade-accent-color": "#6a5744"
+                  }
+                }
+              ]
+            }
         """.trimIndent()
     }
 
