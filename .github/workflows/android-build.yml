@@ -17,6 +17,7 @@ jobs:
       FORESTNAV_STORE_PASSWORD: ${{ secrets.FORESTNAV_STORE_PASSWORD }}
       FORESTNAV_KEY_ALIAS: ${{ secrets.FORESTNAV_KEY_ALIAS }}
       FORESTNAV_KEY_PASSWORD: ${{ secrets.FORESTNAV_KEY_PASSWORD }}
+      ARCGIS_API_KEY: ${{ secrets.ARCGIS_API_KEY }}
     timeout-minutes: 30
 
     steps:

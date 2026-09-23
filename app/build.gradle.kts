@@ -11,10 +11,14 @@ android {
         applicationId = "app.forestnav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 43
-        versionName = "1.4.0"
+        versionCode = 44
+        versionName = "1.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        val arcGisApiKey = System.getenv("ARCGIS_API_KEY").orEmpty()
+        buildConfigField("String", "ARCGIS_API_KEY", "\"$arcGisApiKey\"")
+
         vectorDrawables.useSupportLibrary = true
     }
 

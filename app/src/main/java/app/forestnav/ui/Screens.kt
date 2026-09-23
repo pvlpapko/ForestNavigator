@@ -20,7 +20,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
@@ -982,7 +981,6 @@ private fun OfflineScreen(vm: AppViewModel) {
 private fun SettingsScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
-    var arcGisKey by remember { mutableStateOf(vm.arcGisApiKey()) }
 
     Column(
         Modifier
@@ -1003,22 +1001,8 @@ private fun SettingsScreen(vm: AppViewModel) {
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
-        OutlinedTextField(
-            value = arcGisKey,
-            onValueChange = { arcGisKey = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("ArcGIS API key") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true
-        )
-        Button(
-            enabled = arcGisKey.isNotBlank(),
-            onClick = { vm.updateArcGisApiKey(arcGisKey) }
-        ) {
-            Text("Сохранить ключ")
-        }
         Text(
-            "Ключ хранится только в настройках приложения на этом устройстве. После сохранения карта перезагружается.",
+            "API-ключ ArcGIS встроен в сборку приложения. Вводить его вручную на телефоне не требуется.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

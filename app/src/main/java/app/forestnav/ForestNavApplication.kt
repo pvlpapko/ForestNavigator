@@ -17,7 +17,8 @@ class ForestNavApplication : Application() {
         super.onCreate()
         database = ForestDatabase(this)
         settings = SettingsStore(this)
-        applyArcGisApiKey(settings.arcGisApiKey)
+        val configuredKey = BuildConfig.ARCGIS_API_KEY.ifBlank { settings.arcGisApiKey }
+        applyArcGisApiKey(configuredKey)
     }
 
     fun applyArcGisApiKey(value: String) {
