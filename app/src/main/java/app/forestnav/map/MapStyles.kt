@@ -11,28 +11,15 @@ enum class MapLayer(val title: String) {
 }
 
 /**
- * Clean ArcGIS/Esri map stack.
+ * Clean Mapbox raster stack for MapLibre.
  *
- * No MapTiler URLs, generated files, TileJSON indirection or provider-specific
- * API keys are used by the built-in modes. Online styles use ArcGIS cached
- * MapServer tiles directly. Offline styles are served by LocalMapStyleServer
- * from the exact same source definitions.
+ * We deliberately use documented HTTPS raster endpoints rather than mapbox://
+ * URLs so MapLibre does not depend on Mapbox SDK URL rewriting.
  */
 object MapStyles {
     private const val JSON_PREFIX = "json:"
-
-    private const val STREET =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
-    private const val IMAGERY =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-    private const val TOPO =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
-    private const val HILLSHADE =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}"
-    private const val BOUNDARIES =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
-    private const val TRANSPORT =
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"
+    private const val ATTRIBUTION =
+        "© Mapbox © OpenStreetMap contributors"
 
     fun url(
         layer: MapLayer,
@@ -42,6 +29,8 @@ object MapStyles {
         if (layer == MapLayer.CUSTOM) {
             return settings.customStyleUrl.takeIf { it.isNotBlank() }
         }
+
+        if (!MapboxProvider.hasToken()) return null
 
         if (!online) {
             return when (layer) {
@@ -53,36 +42,25 @@ object MapStyles {
             }
         }
 
-        val json = when (layer) {
+        val style = when (layer) {
             MapLayer.MAP -> singleRasterStyle(
-                name = "Esri World Street Map",
-                sourceId = "street",
-                tiles = STREET,
-                maxZoom = 23,
-                attribution = "Sources: Esri, HERE, Garmin, USGS, OpenStreetMap contributors"
+                name = "Mapbox Streets",
+                source = MapboxSource.STREETS
             )
 
             MapLayer.SATELLITE -> singleRasterStyle(
-                name = "Esri World Imagery",
-                sourceId = "imagery",
-                tiles = IMAGERY,
-                maxZoom = 23,
-                attribution = "Source: Esri, Vantor, Earthstar Geographics, GIS User Community"
+                name = "Mapbox Satellite",
+                source = MapboxSource.SATELLITE
             )
 
-            MapLayer.TERRAIN -> singleRasterStyle(
-                name = "Esri World Topographic Map",
-                sourceId = "topo",
-                tiles = TOPO,
-                maxZoom = 23,
-                attribution = "Sources: Esri, HERE, Garmin, USGS, OpenStreetMap contributors"
-            )
+            MapLayer.TERRAIN -> terrainStyle()
 
             MapLayer.SATELLITE_TERRAIN -> satelliteTerrainStyle()
+
             MapLayer.CUSTOM -> return null
         }
 
-        return JSON_PREFIX + json
+        return JSON_PREFIX + style
     }
 
     fun isJsonStyle(value: String): Boolean = value.startsWith(JSON_PREFIX)
@@ -94,30 +72,27 @@ object MapStyles {
 
     private fun singleRasterStyle(
         name: String,
-        sourceId: String,
-        tiles: String,
-        maxZoom: Int,
-        attribution: String
+        source: MapboxSource
     ): String = """
         {
           "version": 8,
           "name": "$name",
           "sources": {
-            "$sourceId": {
+            "${source.id}": {
               "type": "raster",
-              "tiles": ["$tiles"],
+              "tiles": ["${MapboxProvider.tileTemplate(source)}"],
               "scheme": "xyz",
-              "tileSize": 256,
+              "tileSize": ${source.tileSize},
               "minzoom": 0,
-              "maxzoom": $maxZoom,
-              "attribution": "$attribution"
+              "maxzoom": ${source.maxZoom},
+              "attribution": "$ATTRIBUTION"
             }
           },
           "layers": [
             {
-              "id": "$sourceId",
+              "id": "${source.id}",
               "type": "raster",
-              "source": "$sourceId",
+              "source": "${source.id}",
               "paint": {
                 "raster-opacity": 1.0,
                 "raster-resampling": "linear"
@@ -127,77 +102,109 @@ object MapStyles {
         }
     """.trimIndent()
 
-    private fun satelliteTerrainStyle(): String = """
-        {
-          "version": 8,
-          "name": "Esri Imagery + Relief + Reference",
-          "sources": {
-            "imagery": {
-              "type": "raster",
-              "tiles": ["$IMAGERY"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 23
-            },
-            "hillshade": {
-              "type": "raster",
-              "tiles": ["$HILLSHADE"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 23
-            },
-            "transport": {
-              "type": "raster",
-              "tiles": ["$TRANSPORT"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 23
-            },
-            "boundaries": {
-              "type": "raster",
-              "tiles": ["$BOUNDARIES"],
-              "scheme": "xyz",
-              "tileSize": 256,
-              "minzoom": 0,
-              "maxzoom": 23
+    private fun terrainStyle(): String {
+        val outdoors = MapboxSource.OUTDOORS
+        val dem = MapboxSource.TERRAIN_RGB
+
+        return """
+            {
+              "version": 8,
+              "name": "Mapbox Outdoors + Relief",
+              "sources": {
+                "${outdoors.id}": {
+                  "type": "raster",
+                  "tiles": ["${MapboxProvider.tileTemplate(outdoors)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${outdoors.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${outdoors.maxZoom},
+                  "attribution": "$ATTRIBUTION"
+                },
+                "${dem.id}": {
+                  "type": "raster-dem",
+                  "tiles": ["${MapboxProvider.tileTemplate(dem)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${dem.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${dem.maxZoom},
+                  "encoding": "mapbox",
+                  "attribution": "$ATTRIBUTION"
+                }
+              },
+              "layers": [
+                {
+                  "id": "outdoors",
+                  "type": "raster",
+                  "source": "${outdoors.id}"
+                },
+                {
+                  "id": "terrain-hillshade",
+                  "type": "hillshade",
+                  "source": "${dem.id}",
+                  "paint": {
+                    "hillshade-exaggeration": 0.56,
+                    "hillshade-shadow-color": "#3a3028",
+                    "hillshade-highlight-color": "#fff8e8",
+                    "hillshade-accent-color": "#7c674d"
+                  }
+                }
+              ]
             }
-          },
-          "layers": [
+        """.trimIndent()
+    }
+
+    private fun satelliteTerrainStyle(): String {
+        val base = MapboxSource.SATELLITE_STREETS
+        val dem = MapboxSource.TERRAIN_RGB
+
+        return """
             {
-              "id": "imagery",
-              "type": "raster",
-              "source": "imagery"
-            },
-            {
-              "id": "hillshade",
-              "type": "raster",
-              "source": "hillshade",
-              "paint": {
-                "raster-opacity": 0.30,
-                "raster-contrast": 0.16,
-                "raster-saturation": -0.18
-              }
-            },
-            {
-              "id": "transport",
-              "type": "raster",
-              "source": "transport",
-              "paint": {
-                "raster-opacity": 0.86
-              }
-            },
-            {
-              "id": "boundaries",
-              "type": "raster",
-              "source": "boundaries",
-              "paint": {
-                "raster-opacity": 0.94
-              }
+              "version": 8,
+              "name": "Mapbox Satellite Streets + Relief",
+              "sources": {
+                "${base.id}": {
+                  "type": "raster",
+                  "tiles": ["${MapboxProvider.tileTemplate(base)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${base.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${base.maxZoom},
+                  "attribution": "$ATTRIBUTION"
+                },
+                "${dem.id}": {
+                  "type": "raster-dem",
+                  "tiles": ["${MapboxProvider.tileTemplate(dem)}"],
+                  "scheme": "xyz",
+                  "tileSize": ${dem.tileSize},
+                  "minzoom": 0,
+                  "maxzoom": ${dem.maxZoom},
+                  "encoding": "mapbox",
+                  "attribution": "$ATTRIBUTION"
+                }
+              },
+              "layers": [
+                {
+                  "id": "satellite-streets",
+                  "type": "raster",
+                  "source": "${base.id}",
+                  "paint": {
+                    "raster-opacity": 1.0,
+                    "raster-resampling": "linear"
+                  }
+                },
+                {
+                  "id": "terrain-hillshade",
+                  "type": "hillshade",
+                  "source": "${dem.id}",
+                  "paint": {
+                    "hillshade-exaggeration": 0.44,
+                    "hillshade-shadow-color": "#261e18",
+                    "hillshade-highlight-color": "#fff7e5",
+                    "hillshade-accent-color": "#725d45"
+                  }
+                }
+              ]
             }
-          ]
-        }
-    """.trimIndent()
+        """.trimIndent()
+    }
 }
