@@ -244,6 +244,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         OfflineMapDownloadService.cancel(app, regionId)
     }
 
+    fun deleteDownload(regionId: Long) {
+        OfflineMapDownloadService.delete(app, regionId)
+    }
+
     fun refreshOfflineRegions() {
         offline.listRegions({ _offlineRegions.value = it }, { })
     }

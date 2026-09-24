@@ -29,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -49,6 +50,10 @@ object OfflineMapDownloadState {
         val id = value.regionId ?: return
         synchronized(lock) { _progress.value = _progress.value + (id to value) }
     }
+
+    internal fun remove(regionId: Long) {
+        synchronized(lock) { _progress.value = _progress.value - regionId }
+    }
 }
 
 class OfflineMapDownloadService : Service() {
@@ -56,6 +61,7 @@ class OfflineMapDownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val running = ConcurrentHashMap<Long, Job>()
     private val arcJobs = ConcurrentHashMap<Long, ExportTileCacheJob>()
+    private val deletedIds = ConcurrentHashMap.newKeySet<Long>()
     private val slots = Semaphore(MAX_CONCURRENT_REGIONS, true)
     private var foregroundStarted = false
 
@@ -81,6 +87,10 @@ class OfflineMapDownloadService : Service() {
             ACTION_CANCEL -> {
                 val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
                 if (id > 0) cancelRegion(id) else cancelAll()
+            }
+            ACTION_DELETE -> {
+                val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
+                if (id > 0) deleteRegion(id)
             }
             ACTION_START -> startRegion(jobFromIntent(intent))
             null -> {
@@ -119,11 +129,11 @@ class OfflineMapDownloadService : Service() {
                     spec.latitude, spec.longitude, spec.radiusKm,
                     spec.minZoom, spec.maxZoom
                 )
-                val chunks = manager.buildChunks(
+                val initialChunks = manager.buildChunks(
                     spec.regionId, spec.layer, spec.latitude, spec.longitude,
                     spec.radiusKm, spec.maxZoom.toInt()
                 )
-                if (chunks.isEmpty()) {
+                if (initialChunks.isEmpty()) {
                     saveJob(spec, active = false)
                     OfflineMapDownloadState.publish(
                         OfflineMapManager.DownloadProgress(
@@ -138,19 +148,32 @@ class OfflineMapDownloadService : Service() {
                     return@launch
                 }
 
-                var completed = chunks.count {
+                val queue = java.util.ArrayDeque<OfflineMapManager.ExportChunk>()
+                initialChunks
+                    .filterNot { it.file.isFile && it.file.length() > MIN_PACKAGE_BYTES }
+                    .forEach(queue::addLast)
+
+                var completed = initialChunks.count {
                     it.file.isFile && it.file.length() > MIN_PACKAGE_BYTES
                 }.toLong()
-                publish(spec, completed, chunks.size.toLong())
+                var required = completed + queue.size.toLong()
+                publish(spec, completed, required)
 
-                for (chunk in chunks) {
-                    if (chunk.file.isFile && chunk.file.length() > MIN_PACKAGE_BYTES) continue
+                while (queue.isNotEmpty()) {
+                    val chunk = queue.removeFirst()
+
+                    if (chunk.file.isFile && chunk.file.length() > MIN_PACKAGE_BYTES) {
+                        completed++
+                        required = completed + queue.size.toLong()
+                        publish(spec, completed, required)
+                        continue
+                    }
 
                     var success = false
+                    var tileLimitExceeded = false
                     var lastError: Throwable? = null
-                    repeat(CHUNK_RETRIES) { attempt ->
-                        if (success) return@repeat
 
+                    for (attempt in 0 until CHUNK_RETRIES) {
                         var exportJob: ExportTileCacheJob? = null
                         var progressJob: Job? = null
                         try {
@@ -184,7 +207,7 @@ class OfflineMapDownloadService : Service() {
                                     publish(
                                         spec = spec,
                                         completed = completed,
-                                        required = chunks.size.toLong(),
+                                        required = required,
                                         currentPackageProgress = percent.coerceIn(0, 100)
                                     )
                                 }
@@ -202,6 +225,7 @@ class OfflineMapDownloadService : Service() {
                             ) { "ArcGIS вернул пустой пакет" }
 
                             success = true
+                            break
                         } catch (e: TimeoutCancellationException) {
                             lastError = IllegalStateException(
                                 "ArcGIS слишком долго готовил пакет. Он будет автоматически повторён.",
@@ -216,6 +240,12 @@ class OfflineMapDownloadService : Service() {
                         } catch (t: Throwable) {
                             lastError = t
                             exportJob?.cancel()
+
+                            if (isTileLimitError(t)) {
+                                tileLimitExceeded = true
+                                break
+                            }
+
                             if (attempt + 1 < CHUNK_RETRIES) {
                                 delay(RETRY_DELAYS_MS[attempt])
                             }
@@ -224,14 +254,32 @@ class OfflineMapDownloadService : Service() {
                             exportJob?.let { arcJobs.remove(spec.regionId, it) }
                         }
                     }
+
+                    if (tileLimitExceeded) {
+                        check(chunk.depth < MAX_SUBDIVISION_DEPTH) {
+                            "ArcGIS всё ещё отклоняет пакет после максимального дробления: ${lastError?.message}"
+                        }
+
+                        chunk.file.delete()
+                        val children = manager.splitChunk(chunk)
+                        check(children.size == 4) { "Не удалось разделить слишком большой пакет" }
+
+                        children.asReversed().forEach(queue::addFirst)
+                        required = completed + queue.size.toLong()
+                        publish(spec, completed, required, currentPackageProgress = 0)
+                        continue
+                    }
+
                     if (!success) {
                         throw IllegalStateException(
                             lastError?.message ?: "Не удалось скачать часть карты",
                             lastError
                         )
                     }
+
                     completed++
-                    publish(spec, completed, chunks.size.toLong())
+                    required = completed + queue.size.toLong()
+                    publish(spec, completed, required)
                 }
 
                 val finalDir = manager.finalizeRegion(spec.regionId)
@@ -244,8 +292,8 @@ class OfflineMapDownloadService : Service() {
                         regionId = spec.regionId,
                         name = spec.name,
                         layerTitle = spec.layer.title,
-                        completedResources = chunks.size.toLong(),
-                        requiredResources = chunks.size.toLong(),
+                        completedResources = completed,
+                        requiredResources = completed,
                         bytes = bytes,
                         complete = true,
                         active = false
@@ -254,19 +302,21 @@ class OfflineMapDownloadService : Service() {
                 notifyTerminal(
                     terminalNotificationId(spec.regionId),
                     "Офлайн-карта готова",
-                    "${spec.layer.title}: ${chunks.size} пакетов"
+                    "${spec.layer.title}: $completed пакетов"
                 )
             } catch (_: CancellationException) {
-                saveJob(spec, active = false)
-                OfflineMapDownloadState.publish(
-                    OfflineMapManager.DownloadProgress(
-                        regionId = spec.regionId,
-                        name = spec.name,
-                        layerTitle = spec.layer.title,
-                        bytes = manager.calculateBytes(spec.regionId),
-                        cancelled = true
+                if (!deletedIds.contains(spec.regionId)) {
+                    saveJob(spec, active = false)
+                    OfflineMapDownloadState.publish(
+                        OfflineMapManager.DownloadProgress(
+                            regionId = spec.regionId,
+                            name = spec.name,
+                            layerTitle = spec.layer.title,
+                            bytes = manager.calculateBytes(spec.regionId),
+                            cancelled = true
+                        )
                     )
-                )
+                }
             } catch (t: Throwable) {
                 saveJob(spec, active = true)
                 retryLater = true
@@ -286,9 +336,11 @@ class OfflineMapDownloadService : Service() {
                 if (slot) slots.release()
                 running.remove(spec.regionId)
                 updateAggregateNotification()
-                if (retryLater) {
+                if (retryLater && !deletedIds.contains(spec.regionId)) {
                     delay(AUTO_RETRY_MS)
-                    startRegion(spec)
+                    if (!deletedIds.contains(spec.regionId)) {
+                        startRegion(spec)
+                    }
                 } else {
                     stopIfIdle()
                 }
@@ -324,6 +376,28 @@ class OfflineMapDownloadService : Service() {
             runCatching { arcJobs.remove(id)?.cancel() }
             running.remove(id)?.cancel()
             loadJob(id)?.let { saveJob(it, active = false) }
+            stopIfIdle()
+        }
+    }
+
+    private fun deleteRegion(id: Long) {
+        scope.launch {
+            deletedIds += id
+            runCatching { arcJobs.remove(id)?.cancel() }
+            running.remove(id)?.cancelAndJoin()
+
+            manager.deleteRegion(
+                id = id,
+                onSuccess = {},
+                onError = {}
+            )
+            clearJob(id)
+            OfflineMapDownloadState.remove(id)
+
+            getSystemService(NotificationManager::class.java)
+                .cancel(terminalNotificationId(id))
+
+            updateAggregateNotification()
             stopIfIdle()
         }
     }
@@ -517,6 +591,17 @@ class OfflineMapDownloadService : Service() {
             .apply()
     }
 
+    private fun isTileLimitError(error: Throwable): Boolean {
+        val text = generateSequence(error as Throwable?) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+
+        return text.contains("error 001564") ||
+            text.contains("exceeds the maximum allowed number of tiles") ||
+            text.contains("maxexporttilescount")
+    }
+
     private fun key(id: Long, field: String) = "job_${id}_$field"
 
     private fun terminalNotificationId(regionId: Long): Int =
@@ -533,10 +618,12 @@ class OfflineMapDownloadService : Service() {
         private const val MIN_PACKAGE_BYTES = 512L
         private const val AUTO_RETRY_MS = 20_000L
         private const val CHUNK_TIMEOUT_MS = 180_000L
+        private const val MAX_SUBDIVISION_DEPTH = 6
         private val RETRY_DELAYS_MS = longArrayOf(2_000L, 7_000L, 15_000L)
 
         private const val ACTION_START = "app.forestnav.action.DOWNLOAD_OFFLINE_MAP"
         private const val ACTION_CANCEL = "app.forestnav.action.CANCEL_OFFLINE_MAP"
+        private const val ACTION_DELETE = "app.forestnav.action.DELETE_OFFLINE_MAP_DOWNLOAD"
         private const val EXTRA_REGION_ID = "region_id"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_LAYER = "layer"
@@ -576,6 +663,14 @@ class OfflineMapDownloadService : Service() {
                 .setAction(ACTION_CANCEL)
             if (regionId != null) intent.putExtra(EXTRA_REGION_ID, regionId)
             context.startService(intent)
+        }
+
+        fun delete(context: Context, regionId: Long) {
+            context.startService(
+                Intent(context, OfflineMapDownloadService::class.java)
+                    .setAction(ACTION_DELETE)
+                    .putExtra(EXTRA_REGION_ID, regionId)
+            )
         }
     }
 }

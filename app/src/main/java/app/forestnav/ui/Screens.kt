@@ -949,13 +949,25 @@ private fun OfflineScreen(vm: AppViewModel) {
                                             )
                                         }
 
-                                        if (p.active) {
-                                            p.regionId?.let { id ->
+                                    }
+                                }
+
+                                if (!p.complete) {
+                                    p.regionId?.let { id ->
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (p.active) {
                                                 TextButton(onClick = { vm.cancelDownload(id) }) {
                                                     Icon(Icons.Default.Pause, null)
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("Пауза")
                                                 }
+                                            }
+                                            TextButton(onClick = { vm.deleteDownload(id) }) {
+                                                Icon(Icons.Default.DeleteOutline, null)
+                                                Spacer(Modifier.width(6.dp))
+                                                Text("Удалить")
                                             }
                                         }
                                     }

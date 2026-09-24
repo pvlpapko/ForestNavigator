@@ -39,7 +39,8 @@ class OfflineMapManager(private val context: Context) {
         val south: Double,
         val east: Double,
         val north: Double,
-        val file: File
+        val file: File,
+        val depth: Int = 0
     )
 
     private val root = File(context.filesDir, ROOT_DIR).apply { mkdirs() }
@@ -123,6 +124,33 @@ class OfflineMapManager(private val context: Context) {
             }
         }
         return chunks
+    }
+
+    fun splitChunk(chunk: ExportChunk): List<ExportChunk> {
+        val midLon = (chunk.west + chunk.east) / 2.0
+        val midLat = (chunk.south + chunk.north) / 2.0
+        val parent = chunk.file.parentFile ?: return emptyList()
+        val stem = chunk.file.nameWithoutExtension
+
+        val boxes = listOf(
+            doubleArrayOf(chunk.west, chunk.south, midLon, midLat),
+            doubleArrayOf(midLon, chunk.south, chunk.east, midLat),
+            doubleArrayOf(chunk.west, midLat, midLon, chunk.north),
+            doubleArrayOf(midLon, midLat, chunk.east, chunk.north)
+        )
+
+        return boxes.mapIndexed { quadrant, box ->
+            ExportChunk(
+                source = chunk.source,
+                index = chunk.index * 4 + quadrant,
+                west = box[0],
+                south = box[1],
+                east = box[2],
+                north = box[3],
+                file = File(parent, "${stem}_q$quadrant.tpkx"),
+                depth = chunk.depth + 1
+            )
+        }
     }
 
     fun finalizeRegion(regionId: Long): File {
