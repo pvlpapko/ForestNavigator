@@ -917,7 +917,10 @@ private fun OfflineScreen(vm: AppViewModel) {
 
                                     else -> {
                                         val ratio = if (p.requiredResources > 0L) {
-                                            p.completedResources.toFloat() / p.requiredResources
+                                            (
+                                                p.completedResources.toFloat() +
+                                                    p.currentPackageProgress / 100f
+                                                ) / p.requiredResources
                                         } else 0f
 
                                         if (p.requiredResources > 0L) {
@@ -926,13 +929,14 @@ private fun OfflineScreen(vm: AppViewModel) {
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                             Text(
-                                                "Ресурсов: ${p.completedResources}/${p.requiredResources} • " +
+                                                "Пакетов: ${p.completedResources}/${p.requiredResources} • " +
+                                                    "текущий ${p.currentPackageProgress}% • " +
                                                     "${p.bytes / (1024 * 1024)} МБ",
                                                 style = MaterialTheme.typography.bodySmall
                                             )
                                             if (p.needsRetry && p.missingResources > 0L) {
                                                 Text(
-                                                    "Автодокачивание: осталось ${p.missingResources} тайлов. Приложение продолжит само.",
+                                                    "Автодокачивание: осталось ${p.missingResources} пакетов. Приложение продолжит само.",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )

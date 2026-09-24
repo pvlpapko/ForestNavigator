@@ -17,6 +17,7 @@ import app.forestnav.MainActivity
 import app.forestnav.R
 import app.forestnav.map.MapLayer
 import app.forestnav.map.OfflineMapManager
+import com.arcgismaps.ArcGISEnvironment
 import com.arcgismaps.geometry.Envelope
 import com.arcgismaps.geometry.SpatialReference
 import com.arcgismaps.tasks.tilecache.ExportTileCacheJob
@@ -26,11 +27,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
 import kotlin.math.pow
@@ -146,9 +150,13 @@ class OfflineMapDownloadService : Service() {
                     var lastError: Throwable? = null
                     repeat(CHUNK_RETRIES) { attempt ->
                         if (success) return@repeat
+
+                        var exportJob: ExportTileCacheJob? = null
+                        var progressJob: Job? = null
                         try {
                             if (chunk.file.exists()) chunk.file.delete()
                             chunk.file.parentFile?.mkdirs()
+
                             val area = Envelope(
                                 xMin = chunk.west,
                                 yMin = chunk.south,
@@ -156,31 +164,64 @@ class OfflineMapDownloadService : Service() {
                                 yMax = chunk.north,
                                 spatialReference = SpatialReference.wgs84()
                             )
-                            val task = ExportTileCacheTask(chunk.source.url)
+                            val task = ExportTileCacheTask(chunk.source.url).apply {
+                                apiKey = ArcGISEnvironment.apiKey
+                            }
                             val params = task.createDefaultExportTileCacheParameters(
                                 areaOfInterest = area,
                                 minScale = scaleForZoom(spec.minZoom.toInt()),
                                 maxScale = scaleForZoom(spec.maxZoom.toInt())
                             ).getOrThrow()
-                            val exportJob = task.createExportTileCacheJob(
+
+                            exportJob = task.createExportTileCacheJob(
                                 parameters = params,
                                 downloadFilePath = chunk.file.absolutePath
                             )
                             arcJobs[spec.regionId] = exportJob
-                            exportJob.start()
-                            exportJob.result().getOrThrow()
-                            arcJobs.remove(spec.regionId, exportJob)
+
+                            progressJob = scope.launch {
+                                exportJob.progress.collectLatest { percent ->
+                                    publish(
+                                        spec = spec,
+                                        completed = completed,
+                                        required = chunks.size.toLong(),
+                                        currentPackageProgress = percent.coerceIn(0, 100)
+                                    )
+                                }
+                            }
+
+                            check(exportJob.start()) { "ArcGIS не запустил экспорт пакета" }
+
+                            withTimeout(CHUNK_TIMEOUT_MS) {
+                                exportJob.result().getOrThrow()
+                            }
+
                             check(
                                 chunk.file.isFile &&
                                     chunk.file.length() > MIN_PACKAGE_BYTES
                             ) { "ArcGIS вернул пустой пакет" }
+
                             success = true
+                        } catch (e: TimeoutCancellationException) {
+                            lastError = IllegalStateException(
+                                "ArcGIS слишком долго готовил пакет. Он будет автоматически повторён.",
+                                e
+                            )
+                            exportJob?.cancel()
+                            if (attempt + 1 < CHUNK_RETRIES) {
+                                delay(RETRY_DELAYS_MS[attempt])
+                            }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (t: Throwable) {
                             lastError = t
-                            arcJobs.remove(spec.regionId)
-                            if (attempt + 1 < CHUNK_RETRIES) delay(RETRY_DELAYS_MS[attempt])
+                            exportJob?.cancel()
+                            if (attempt + 1 < CHUNK_RETRIES) {
+                                delay(RETRY_DELAYS_MS[attempt])
+                            }
+                        } finally {
+                            progressJob?.cancel()
+                            exportJob?.let { arcJobs.remove(spec.regionId, it) }
                         }
                     }
                     if (!success) {
@@ -256,7 +297,12 @@ class OfflineMapDownloadService : Service() {
         running[spec.regionId] = job
     }
 
-    private fun publish(spec: JobSpec, completed: Long, required: Long) {
+    private fun publish(
+        spec: JobSpec,
+        completed: Long,
+        required: Long,
+        currentPackageProgress: Int = 0
+    ) {
         OfflineMapDownloadState.publish(
             OfflineMapManager.DownloadProgress(
                 regionId = spec.regionId,
@@ -266,6 +312,7 @@ class OfflineMapDownloadService : Service() {
                 requiredResources = required,
                 bytes = manager.calculateBytes(spec.regionId),
                 missingResources = (required - completed).coerceAtLeast(0),
+                currentPackageProgress = currentPackageProgress.coerceIn(0, 100),
                 active = true
             )
         )
@@ -484,7 +531,8 @@ class OfflineMapDownloadService : Service() {
         private const val MAX_CONCURRENT_REGIONS = 2
         private const val CHUNK_RETRIES = 3
         private const val MIN_PACKAGE_BYTES = 512L
-        private const val AUTO_RETRY_MS = 30_000L
+        private const val AUTO_RETRY_MS = 20_000L
+        private const val CHUNK_TIMEOUT_MS = 180_000L
         private val RETRY_DELAYS_MS = longArrayOf(2_000L, 7_000L, 15_000L)
 
         private const val ACTION_START = "app.forestnav.action.DOWNLOAD_OFFLINE_MAP"

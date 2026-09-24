@@ -20,12 +20,11 @@ import com.arcgismaps.Color
 import com.arcgismaps.geometry.GeometryEngine
 import com.arcgismaps.geometry.Point
 import com.arcgismaps.geometry.SpatialReference
+import com.arcgismaps.location.LocationDisplayAutoPanMode
 import com.arcgismaps.mapping.ArcGISMap
 import com.arcgismaps.mapping.Viewpoint
 import com.arcgismaps.mapping.layers.ArcGISTiledLayer
 import com.arcgismaps.mapping.layers.TileCache
-import com.arcgismaps.mapping.symbology.SimpleMarkerSymbol
-import com.arcgismaps.mapping.symbology.SimpleMarkerSymbolStyle
 import com.arcgismaps.mapping.symbology.TextSymbol
 import com.arcgismaps.mapping.view.Graphic
 import com.arcgismaps.mapping.view.GraphicsOverlay
@@ -37,14 +36,12 @@ import kotlin.math.abs
 
 private class ArcMapState {
     val waypointOverlay = GraphicsOverlay()
-    val userOverlay = GraphicsOverlay()
-    var userGraphic: Graphic? = null
-    var userSymbol: SimpleMarkerSymbol? = null
     var waypointFingerprint: Int = 0
     var currentLayer: MapLayer? = null
     var currentOnline: Boolean? = null
     var recenterToken: Int = -1
     var inputJobs: List<Job> = emptyList()
+    var locationJob: Job? = null
     var lastScale: Double = 0.0
 }
 
@@ -52,7 +49,7 @@ private class ArcMapState {
 fun ForestMapView(
     modifier: Modifier,
     location: Location,
-    heading: Float?,
+    @Suppress("UNUSED_PARAMETER") heading: Float?,
     waypoints: List<Waypoint>,
     layer: MapLayer,
     online: Boolean,
@@ -79,7 +76,6 @@ fun ForestMapView(
 
     DisposableEffect(mapView, lifecycleOwner) {
         lifecycleOwner.lifecycle.addObserver(mapView)
-        mapView.graphicsOverlays.add(state.userOverlay)
         mapView.graphicsOverlays.add(state.waypointOverlay)
 
         state.inputJobs = listOf(
@@ -137,6 +133,8 @@ fun ForestMapView(
         onDispose {
             state.inputJobs.forEach { it.cancel() }
             state.inputJobs = emptyList()
+            state.locationJob?.cancel()
+            state.locationJob = null
             lifecycleOwner.lifecycle.removeObserver(mapView)
             runCatching { mapView.onDestroy(lifecycleOwner) }
         }
@@ -165,7 +163,7 @@ fun ForestMapView(
                     layer = layer,
                     online = online
                 )
-                updateUserLocation(state, location, heading)
+                configureWalkingLocationDisplay(this, state, scope)
                 updateWaypoints(state, waypoints)
             }
         },
@@ -174,7 +172,6 @@ fun ForestMapView(
                 applyLayer(view, state, offline, layer, online)
             }
 
-            updateUserLocation(state, location, heading)
             updateWaypoints(state, waypoints)
 
             if (state.recenterToken != recenterToken) {
@@ -186,13 +183,35 @@ fun ForestMapView(
                         SpatialReference.wgs84()
                     )
                     view.setViewpointCenter(center, RECENTER_SCALE)
-                    heading?.takeIf { it.isFinite() }?.let {
-                        view.setViewpointRotation(it.toDouble())
-                    }
+                    val display = view.locationDisplay
+                    display.initialZoomScale = RECENTER_SCALE
+                    display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
                 }
             }
         }
     )
+}
+
+private fun configureWalkingLocationDisplay(
+    mapView: MapView,
+    state: ArcMapState,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    val display = mapView.locationDisplay
+    display.showLocation = true
+    display.showAccuracy = true
+    display.showPingAnimationSymbol = false
+    display.useCourseSymbolOnMovement = false
+    display.initialZoomScale = INITIAL_SCALE
+    display.navigationPointHeightFactor = 0.5f
+    display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
+
+    state.locationJob?.cancel()
+    state.locationJob = scope.launch {
+        display.dataSource.start().onSuccess {
+            display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
+        }
+    }
 }
 
 private fun applyLayer(
@@ -238,37 +257,6 @@ private fun applyLayer(
     mapView.map = map
     state.currentLayer = layer
     state.currentOnline = online
-}
-
-private fun updateUserLocation(
-    state: ArcMapState,
-    location: Location,
-    heading: Float?
-) {
-    val point = Point(
-        location.longitude,
-        location.latitude,
-        SpatialReference.wgs84()
-    )
-
-    var symbol = state.userSymbol
-    if (symbol == null) {
-        symbol = SimpleMarkerSymbol(
-            SimpleMarkerSymbolStyle.Triangle,
-            Color.fromRgba(42, 220, 185, 255),
-            20.0f
-        )
-        state.userSymbol = symbol
-        val graphic = Graphic(point, symbol)
-        state.userOverlay.graphics.add(graphic)
-        state.userGraphic = graphic
-    } else {
-        state.userGraphic?.geometry = point
-    }
-
-    heading?.takeIf { it.isFinite() }?.let {
-        symbol.angle = it
-    }
 }
 
 private fun updateWaypoints(state: ArcMapState, waypoints: List<Waypoint>) {

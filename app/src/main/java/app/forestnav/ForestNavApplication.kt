@@ -17,6 +17,8 @@ class ForestNavApplication : Application() {
         super.onCreate()
         MapLibre.getInstance(this)
 
+        ArcGISEnvironment.applicationContext = applicationContext
+
         database = ForestDatabase(this)
         settings = SettingsStore(this)
 
