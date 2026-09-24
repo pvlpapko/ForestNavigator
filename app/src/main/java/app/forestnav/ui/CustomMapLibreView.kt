@@ -51,6 +51,10 @@ private class NativeMapState {
     var lastScaleMeters: Double = 0.0
     var gestureActive = false
     var followUser = true
+    var lastLocationElapsedNs: Long = Long.MIN_VALUE
+    var lastLocationTimeMs: Long = Long.MIN_VALUE
+    var lastLocationLatitude: Double = Double.NaN
+    var lastLocationLongitude: Double = Double.NaN
 }
 
 @Composable
@@ -220,7 +224,7 @@ fun CustomMapLibreView(
                 return@AndroidView
             }
 
-            updateLocationPuck(map, location)
+            updateLocationPuck(map, state, location)
             updateWaypointAnnotations(context, map, state, waypoints)
 
             if (state.lastRecenterToken != recenterToken) {
@@ -355,7 +359,26 @@ private fun setupLocationPuck(
 }
 
 @SuppressLint("MissingPermission")
-private fun updateLocationPuck(map: MapLibreMap, location: Location) {
+private fun updateLocationPuck(
+    map: MapLibreMap,
+    state: NativeMapState,
+    location: Location
+) {
+    val elapsedNs = location.elapsedRealtimeNanos
+    val sameSample = if (elapsedNs > 0L && state.lastLocationElapsedNs > 0L) {
+        elapsedNs == state.lastLocationElapsedNs
+    } else {
+        location.time == state.lastLocationTimeMs &&
+            location.latitude == state.lastLocationLatitude &&
+            location.longitude == state.lastLocationLongitude
+    }
+    if (sameSample) return
+
+    state.lastLocationElapsedNs = elapsedNs
+    state.lastLocationTimeMs = location.time
+    state.lastLocationLatitude = location.latitude
+    state.lastLocationLongitude = location.longitude
+
     val component = map.locationComponent
     if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
         component.forceLocationUpdate(location)

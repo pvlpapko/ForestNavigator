@@ -3,6 +3,7 @@ package app.forestnav.ui
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -70,9 +71,35 @@ private class ArcMapState {
         AppLocationProvider(currentLocation, currentHeading)
     }
 
-    fun updateNavigation(location: Location, heading: Float?) {
+    private var lastLocationElapsedNs: Long = Long.MIN_VALUE
+    private var lastLocationTimeMs: Long = Long.MIN_VALUE
+    private var lastLatitude: Double = Double.NaN
+    private var lastLongitude: Double = Double.NaN
+
+    fun updateLocation(location: Location) {
+        val elapsedNs = location.elapsedRealtimeNanos
+        val sameSample = if (elapsedNs > 0L && lastLocationElapsedNs > 0L) {
+            elapsedNs == lastLocationElapsedNs
+        } else {
+            location.time == lastLocationTimeMs &&
+                location.latitude == lastLatitude &&
+                location.longitude == lastLongitude
+        }
+        if (sameSample) return
+
+        lastLocationElapsedNs = elapsedNs
+        lastLocationTimeMs = location.time
+        lastLatitude = location.latitude
+        lastLongitude = location.longitude
         currentLocation.value = Location(location)
-        currentHeading.value = heading
+    }
+
+    fun updateHeading(heading: Float?) {
+        if (heading == null) return
+        val previous = currentHeading.value
+        if (previous == null || kotlin.math.abs(shortestAngle(heading - previous)) >= 0.05f) {
+            currentHeading.value = heading
+        }
     }
 }
 
@@ -105,7 +132,18 @@ fun ForestMapView(
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
-    state.updateNavigation(location, heading)
+    LaunchedEffect(
+        location.elapsedRealtimeNanos,
+        location.time,
+        location.latitude,
+        location.longitude
+    ) {
+        state.updateLocation(location)
+    }
+
+    LaunchedEffect(heading) {
+        state.updateHeading(heading)
+    }
 
     DisposableEffect(mapView, lifecycleOwner) {
         lifecycleOwner.lifecycle.addObserver(mapView)
@@ -189,7 +227,8 @@ fun ForestMapView(
                     )
                 )
                 state.recenterToken = recenterToken
-                state.updateNavigation(location, heading)
+                state.updateLocation(location)
+                state.updateHeading(heading)
 
                 applyLayer(
                     mapView = this,
@@ -203,9 +242,10 @@ fun ForestMapView(
             }
         },
         update = { view ->
-            state.updateNavigation(location, heading)
-
-            if (state.currentLayer != layer || state.currentOnline != online) {
+            // Do not rebuild the whole ArcGISMap for transient connectivity callbacks.
+            // Replacing MapView.map clears rendered tiles for a moment, which was the
+            // visible blue/blank flash in the screen recording.
+            if (state.currentLayer != layer) {
                 applyLayer(view, state, offline, layer, online)
             }
 
@@ -372,6 +412,13 @@ private fun waypointSymbol(type: WaypointType): String = when (type) {
 private fun toWgs84(point: Point?): Point? {
     if (point == null) return null
     return GeometryEngine.projectOrNull(point, SpatialReference.wgs84())
+}
+
+private fun shortestAngle(value: Float): Float {
+    var delta = value % 360f
+    if (delta > 180f) delta -= 360f
+    if (delta < -180f) delta += 360f
+    return delta
 }
 
 private const val WAYPOINT_ID = "waypointId"

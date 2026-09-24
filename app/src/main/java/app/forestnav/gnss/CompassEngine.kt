@@ -99,14 +99,16 @@ class CompassEngine(private val context: Context) : SensorEventListener {
         } else {
             val dtSeconds =
                 ((now - lastSensorNs) / 1_000_000_000.0).coerceIn(0.005, 0.20)
-            val delta = shortestAngle(raw - previous)
+            val rawDelta = shortestAngle(raw - previous)
+            val maxDelta = (MAX_TURN_RATE_DEG_PER_SECOND * dtSeconds).toFloat()
+            val boundedDelta = rawDelta.coerceIn(-maxDelta, maxDelta)
             val timeConstant = when {
-                abs(delta) >= 35f -> 0.08
-                abs(delta) >= 12f -> 0.12
-                else -> 0.18
+                abs(boundedDelta) >= 25f -> 0.10
+                abs(boundedDelta) >= 8f -> 0.16
+                else -> 0.24
             }
             val alpha = (1.0 - exp(-dtSeconds / timeConstant)).toFloat()
-            normalize(previous + delta * alpha)
+            normalize(previous + boundedDelta * alpha)
         }
 
         lastSensorNs = now
@@ -149,8 +151,9 @@ class CompassEngine(private val context: Context) : SensorEventListener {
 
     companion object {
         private const val FALLBACK_VECTOR_ALPHA = 0.12f
-        private const val MIN_EMIT_DELTA_DEG = 0.12f
-        private const val EMIT_INTERVAL_NS = 50_000_000L
-        private const val FORCE_EMIT_INTERVAL_NS = 250_000_000L
+        private const val MAX_TURN_RATE_DEG_PER_SECOND = 220.0
+        private const val MIN_EMIT_DELTA_DEG = 0.18f
+        private const val EMIT_INTERVAL_NS = 80_000_000L
+        private const val FORCE_EMIT_INTERVAL_NS = 320_000_000L
     }
 }
