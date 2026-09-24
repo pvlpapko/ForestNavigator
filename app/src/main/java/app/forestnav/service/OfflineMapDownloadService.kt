@@ -617,7 +617,7 @@ class OfflineMapDownloadService : Service() {
         private const val CHUNK_RETRIES = 3
         private const val MIN_PACKAGE_BYTES = 512L
         private const val AUTO_RETRY_MS = 20_000L
-        private const val CHUNK_TIMEOUT_MS = 180_000L
+        private const val CHUNK_TIMEOUT_MS = 600_000L
         private const val MAX_SUBDIVISION_DEPTH = 6
         private val RETRY_DELAYS_MS = longArrayOf(2_000L, 7_000L, 15_000L)
 

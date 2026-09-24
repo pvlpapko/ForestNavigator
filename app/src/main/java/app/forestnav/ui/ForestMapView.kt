@@ -20,6 +20,8 @@ import com.arcgismaps.Color
 import com.arcgismaps.geometry.GeometryEngine
 import com.arcgismaps.geometry.Point
 import com.arcgismaps.geometry.SpatialReference
+import com.arcgismaps.location.CustomLocationDataSource
+import com.arcgismaps.location.Location as ArcGISLocation
 import com.arcgismaps.location.LocationDisplayAutoPanMode
 import com.arcgismaps.mapping.ArcGISMap
 import com.arcgismaps.mapping.Viewpoint
@@ -30,9 +32,26 @@ import com.arcgismaps.mapping.view.Graphic
 import com.arcgismaps.mapping.view.GraphicsOverlay
 import com.arcgismaps.mapping.view.MapView
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.time.Instant
 import kotlin.math.abs
+
+private class AppLocationProvider(
+    locations: StateFlow<Location?>,
+    headings: StateFlow<Float?>
+) : CustomLocationDataSource.LocationProvider {
+    override val locations: Flow<ArcGISLocation> =
+        locations.filterNotNull().map(::toArcGISLocation)
+
+    override val headings: Flow<Double> =
+        headings.filterNotNull().map { it.toDouble() }
+}
 
 private class ArcMapState {
     val waypointOverlay = GraphicsOverlay()
@@ -43,13 +62,25 @@ private class ArcMapState {
     var inputJobs: List<Job> = emptyList()
     var locationJob: Job? = null
     var lastScale: Double = 0.0
+
+    val currentLocation = MutableStateFlow<Location?>(null)
+    val currentHeading = MutableStateFlow<Float?>(null)
+
+    val locationDataSource = CustomLocationDataSource {
+        AppLocationProvider(currentLocation, currentHeading)
+    }
+
+    fun updateNavigation(location: Location, heading: Float?) {
+        currentLocation.value = Location(location)
+        currentHeading.value = heading
+    }
 }
 
 @Composable
 fun ForestMapView(
     modifier: Modifier,
     location: Location,
-    @Suppress("UNUSED_PARAMETER") heading: Float?,
+    heading: Float?,
     waypoints: List<Waypoint>,
     layer: MapLayer,
     online: Boolean,
@@ -73,6 +104,8 @@ fun ForestMapView(
     val currentLongPress = rememberUpdatedState(onMapLongPress)
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
+
+    state.updateNavigation(location, heading)
 
     DisposableEffect(mapView, lifecycleOwner) {
         lifecycleOwner.lifecycle.addObserver(mapView)
@@ -156,6 +189,8 @@ fun ForestMapView(
                     )
                 )
                 state.recenterToken = recenterToken
+                state.updateNavigation(location, heading)
+
                 applyLayer(
                     mapView = this,
                     state = state,
@@ -168,6 +203,8 @@ fun ForestMapView(
             }
         },
         update = { view ->
+            state.updateNavigation(location, heading)
+
             if (state.currentLayer != layer || state.currentOnline != online) {
                 applyLayer(view, state, offline, layer, online)
             }
@@ -204,15 +241,46 @@ private fun configureWalkingLocationDisplay(
     display.useCourseSymbolOnMovement = false
     display.initialZoomScale = INITIAL_SCALE
     display.navigationPointHeightFactor = 0.5f
-    display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
+    display.dataSource = state.locationDataSource
 
     state.locationJob?.cancel()
     state.locationJob = scope.launch {
-        display.dataSource.start().onSuccess {
+        state.locationDataSource.start().onSuccess {
             display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
         }
     }
 }
+
+private fun toArcGISLocation(source: Location): ArcGISLocation =
+    ArcGISLocation.create(
+        position = Point(
+            source.longitude,
+            source.latitude,
+            SpatialReference.wgs84()
+        ),
+        horizontalAccuracy = if (source.hasAccuracy()) {
+            source.accuracy.toDouble()
+        } else {
+            Double.NaN
+        },
+        verticalAccuracy = if (source.hasVerticalAccuracy()) {
+            source.verticalAccuracyMeters.toDouble()
+        } else {
+            Double.NaN
+        },
+        speed = if (source.hasSpeed()) {
+            source.speed.toDouble()
+        } else {
+            Double.NaN
+        },
+        course = if (source.hasBearing()) {
+            source.bearing.toDouble()
+        } else {
+            Double.NaN
+        },
+        lastKnown = System.currentTimeMillis() - source.time > LAST_KNOWN_AFTER_MS,
+        timestamp = Instant.ofEpochMilli(source.time)
+    )
 
 private fun applyLayer(
     mapView: MapView,
@@ -309,3 +377,4 @@ private fun toWgs84(point: Point?): Point? {
 private const val WAYPOINT_ID = "waypointId"
 private const val INITIAL_SCALE = 7_500.0
 private const val RECENTER_SCALE = 3_500.0
+private const val LAST_KNOWN_AFTER_MS = 5_000L

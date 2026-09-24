@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlin.math.exp
 
 class CompassEngine(private val context: Context) : SensorEventListener {
     private val manager = context.getSystemService(SensorManager::class.java)
@@ -22,9 +22,11 @@ class CompassEngine(private val context: Context) : SensorEventListener {
 
     private val _heading = MutableStateFlow<Float?>(null)
     val heading: StateFlow<Float?> = _heading.asStateFlow()
-    val available: Boolean get() = rotation != null || (accelerometer != null && magnetometer != null)
+    val available: Boolean
+        get() = rotation != null || (accelerometer != null && magnetometer != null)
 
     private var lastEmitNs = 0L
+    private var lastSensorNs = 0L
     private var gravity: FloatArray? = null
     private var magnetic: FloatArray? = null
     private var smoothedHeading: Float? = null
@@ -34,8 +36,13 @@ class CompassEngine(private val context: Context) : SensorEventListener {
             manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
             return
         }
-        accelerometer?.let { manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        magnetometer?.let { manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+
+        accelerometer?.let {
+            manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+        magnetometer?.let {
+            manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
     }
 
     fun stop() = manager.unregisterListener(this)
@@ -44,19 +51,20 @@ class CompassEngine(private val context: Context) : SensorEventListener {
         val matrix = FloatArray(9)
 
         when (event.sensor.type) {
-            Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR -> {
+            Sensor.TYPE_ROTATION_VECTOR,
+            Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR -> {
                 SensorManager.getRotationMatrixFromVector(matrix, event.values)
             }
 
             Sensor.TYPE_ACCELEROMETER -> {
-                gravity = lowPass(event.values, gravity)
+                gravity = lowPassVector(event.values, gravity)
                 val g = gravity ?: return
                 val m = magnetic ?: return
                 if (!SensorManager.getRotationMatrix(matrix, null, g, m)) return
             }
 
             Sensor.TYPE_MAGNETIC_FIELD -> {
-                magnetic = lowPass(event.values, magnetic)
+                magnetic = lowPassVector(event.values, magnetic)
                 val g = gravity ?: return
                 val m = magnetic ?: return
                 if (!SensorManager.getRotationMatrix(matrix, null, g, m)) return
@@ -84,16 +92,26 @@ class CompassEngine(private val context: Context) : SensorEventListener {
         var raw = Math.toDegrees(orientation[0].toDouble()).toFloat()
         if (raw < 0f) raw += 360f
 
+        val now = event.timestamp
         val previous = smoothedHeading
-        val smoothed = if (previous == null) {
+        val smoothed = if (previous == null || lastSensorNs == 0L) {
             raw
         } else {
+            val dtSeconds =
+                ((now - lastSensorNs) / 1_000_000_000.0).coerceIn(0.005, 0.20)
             val delta = shortestAngle(raw - previous)
-            normalize(previous + delta * HEADING_ALPHA)
+            val timeConstant = when {
+                abs(delta) >= 35f -> 0.08
+                abs(delta) >= 12f -> 0.12
+                else -> 0.18
+            }
+            val alpha = (1.0 - exp(-dtSeconds / timeConstant)).toFloat()
+            normalize(previous + delta * alpha)
         }
+
+        lastSensorNs = now
         smoothedHeading = smoothed
 
-        val now = event.timestamp
         if (now - lastEmitNs < EMIT_INTERVAL_NS) return
 
         val current = _heading.value
@@ -101,7 +119,7 @@ class CompassEngine(private val context: Context) : SensorEventListener {
             abs(shortestAngle(smoothed - current)) >= MIN_EMIT_DELTA_DEG ||
             now - lastEmitNs >= FORCE_EMIT_INTERVAL_NS
         ) {
-            _heading.value = ((smoothed * 10f).roundToInt() / 10f)
+            _heading.value = smoothed
             lastEmitNs = now
         }
     }
@@ -119,19 +137,20 @@ class CompassEngine(private val context: Context) : SensorEventListener {
         return v
     }
 
-    private fun lowPass(input: FloatArray, previous: FloatArray?): FloatArray {
+    private fun lowPassVector(input: FloatArray, previous: FloatArray?): FloatArray {
         val out = previous?.copyOf() ?: input.copyOf()
-        val alpha = 0.14f
-        for (i in 0..2) out[i] += alpha * (input[i] - out[i])
+        for (i in 0..2) {
+            out[i] += FALLBACK_VECTOR_ALPHA * (input[i] - out[i])
+        }
         return out
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     companion object {
-        private const val HEADING_ALPHA = 0.10f
-        private const val MIN_EMIT_DELTA_DEG = 1.0f
-        private const val EMIT_INTERVAL_NS = 180_000_000L
-        private const val FORCE_EMIT_INTERVAL_NS = 900_000_000L
+        private const val FALLBACK_VECTOR_ALPHA = 0.12f
+        private const val MIN_EMIT_DELTA_DEG = 0.12f
+        private const val EMIT_INTERVAL_NS = 50_000_000L
+        private const val FORCE_EMIT_INTERVAL_NS = 250_000_000L
     }
 }

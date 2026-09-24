@@ -163,7 +163,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _preciseState.value = PreciseState(active = true, label = name)
         gnss.start(GnssEngine.PowerMode.PRECISION)
         preciseJob = viewModelScope.launch {
-            location.collectLatest { loc ->
+            gnss.rawLocation.collectLatest { loc ->
                 if (loc == null) return@collectLatest
                 val result = collector.add(loc)
                 val (count, best) = collector.progress()
