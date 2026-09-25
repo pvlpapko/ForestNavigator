@@ -6,7 +6,7 @@ import app.forestnav.data.SettingsStore
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import org.maplibre.android.MapLibre
-import org.maplibre.android.module.http.HttpRequestUtil
+import org.maplibre.android.module.http.HttpRequestImpl
 import java.util.concurrent.TimeUnit
 
 class ForestNavApplication : Application() {
