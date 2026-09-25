@@ -20,6 +20,7 @@ import app.forestnav.service.OfflineMapDownloadService
 import app.forestnav.service.OfflineMapDownloadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,23 +31,24 @@ import kotlinx.coroutines.withContext
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as ForestNavApplication
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val _online = MutableStateFlow(hasInternetTransport())
+    private val _online = MutableStateFlow(hasValidatedInternet())
     val online = _online.asStateFlow()
+    private var connectivityRefreshJob: Job? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            _online.value = hasInternetTransport()
+            scheduleConnectivityRefresh()
         }
 
         override fun onLost(network: Network) {
-            _online.value = hasInternetTransport()
+            scheduleConnectivityRefresh(immediate = true)
         }
 
         override fun onCapabilitiesChanged(
             network: Network,
             networkCapabilities: NetworkCapabilities
         ) {
-            _online.value = hasInternetTransport()
+            scheduleConnectivityRefresh()
         }
     }
 
@@ -86,7 +88,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
-        _online.value = hasInternetTransport()
+        _online.value = hasValidatedInternet()
         refreshWaypoints()
         refreshOfflineRegions()
         viewModelScope.launch {
@@ -262,14 +264,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshWaypointsInternal() { _waypoints.value = app.database.listWaypoints() }
 
-    private fun hasInternetTransport(): Boolean {
+    private fun scheduleConnectivityRefresh(immediate: Boolean = false) {
+        connectivityRefreshJob?.cancel()
+        connectivityRefreshJob = viewModelScope.launch {
+            if (!immediate) {
+                delay(CONNECTIVITY_STABILIZE_MS)
+            }
+            _online.value = hasValidatedInternet()
+        }
+    }
+
+    private fun hasValidatedInternet(): Boolean {
         val network = connectivity.activeNetwork ?: return false
         val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    companion object {
+        private const val CONNECTIVITY_STABILIZE_MS = 800L
     }
 
     override fun onCleared() {
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        connectivityRefreshJob?.cancel()
         preciseJob?.cancel()
         gnss.stop()
         compass.stop()

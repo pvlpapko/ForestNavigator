@@ -25,6 +25,7 @@ import com.arcgismaps.location.CustomLocationDataSource
 import com.arcgismaps.location.Location as ArcGISLocation
 import com.arcgismaps.location.LocationDisplayAutoPanMode
 import com.arcgismaps.mapping.ArcGISMap
+import com.arcgismaps.mapping.Basemap
 import com.arcgismaps.mapping.Viewpoint
 import com.arcgismaps.mapping.layers.ArcGISTiledLayer
 import com.arcgismaps.mapping.layers.TileCache
@@ -242,11 +243,14 @@ fun ForestMapView(
             }
         },
         update = { view ->
-            // Do not rebuild the whole ArcGISMap for transient connectivity callbacks.
-            // Replacing MapView.map clears rendered tiles for a moment, which was the
-            // visible blue/blank flash in the screen recording.
-            if (state.currentLayer != layer) {
+            // Rebuild only when the selected layer or the stable, validated
+            // connectivity state really changed. Offline mode must replace the
+            // network basemap with local tile packages.
+            if (state.currentLayer != layer || state.currentOnline != online) {
                 applyLayer(view, state, offline, layer, online)
+                view.locationDisplay.setAutoPanMode(
+                    LocationDisplayAutoPanMode.CompassNavigation
+                )
             }
 
             updateWaypoints(state, waypoints)
@@ -329,22 +333,24 @@ private fun applyLayer(
     layer: MapLayer,
     online: Boolean
 ) {
-    val map = ArcGISMap(MapStyles.basemapStyle(layer)).apply {
-        initialViewpoint = mapView.getCurrentViewpoint(
-            com.arcgismaps.mapping.ViewpointType.CenterAndScale
-        )
-    }
+    val currentViewpoint = mapView.getCurrentViewpoint(
+        com.arcgismaps.mapping.ViewpointType.CenterAndScale
+    )
 
-    if (online && layer == MapLayer.SATELLITE_TERRAIN) {
-        map.operationalLayers.add(
-            ArcGISTiledLayer(MapStyles.HILLSHADE_ONLINE).apply {
-                opacity = 0.22f
+    val map = if (online) {
+        ArcGISMap(MapStyles.basemapStyle(layer)).apply {
+            initialViewpoint = currentViewpoint
+
+            if (layer == MapLayer.SATELLITE_TERRAIN) {
+                operationalLayers.add(
+                    ArcGISTiledLayer(MapStyles.HILLSHADE_ONLINE).apply {
+                        opacity = 0.22f
+                    }
+                )
             }
-        )
-    }
-
-    if (!online) {
-        offline.packagesFor(layer)
+        }
+    } else {
+        val packages = offline.packagesFor(layer)
             .sortedBy {
                 when (it.role) {
                     OfflineLayerRole.BASE -> 0
@@ -352,14 +358,43 @@ private fun applyLayer(
                     OfflineLayerRole.REFERENCE -> 2
                 }
             }
-            .forEach { item ->
-                val cache = TileCache(item.file.absolutePath)
-                map.operationalLayers.add(
-                    ArcGISTiledLayer(cache).apply {
-                        opacity = item.opacity
-                    }
-                )
+
+        val baseLayers = mutableListOf<ArcGISTiledLayer>()
+        val referenceLayers = mutableListOf<ArcGISTiledLayer>()
+        val overlayLayers = mutableListOf<ArcGISTiledLayer>()
+
+        packages.forEach { item ->
+            val tiledLayer = ArcGISTiledLayer(
+                TileCache(item.file.absolutePath)
+            ).apply {
+                opacity = item.opacity
             }
+
+            when (item.role) {
+                OfflineLayerRole.BASE -> baseLayers += tiledLayer
+                OfflineLayerRole.HILLSHADE -> overlayLayers += tiledLayer
+                OfflineLayerRole.REFERENCE -> referenceLayers += tiledLayer
+            }
+        }
+
+        if (baseLayers.isNotEmpty() || referenceLayers.isNotEmpty()) {
+            ArcGISMap(
+                Basemap(
+                    baseLayers = baseLayers,
+                    referenceLayers = referenceLayers
+                )
+            ).apply {
+                initialViewpoint = currentViewpoint
+                operationalLayers.addAll(overlayLayers)
+            }
+        } else {
+            // Even when no package exists for the selected layer, keep a valid
+            // offline map spatial reference so GPS/waypoint graphics still render.
+            ArcGISMap(SpatialReference.webMercator()).apply {
+                initialViewpoint = currentViewpoint
+                operationalLayers.addAll(overlayLayers)
+            }
+        }
     }
 
     mapView.map = map
