@@ -1,4 +1,4 @@
-# ForestNavigator architecture — 1.7.1
+# ForestNavigator architecture — 1.7.2
 
 ## Map rendering
 
@@ -43,3 +43,12 @@ Waypoints and tracks remain in `forestnav.db` and are isolated from map cache mi
 ## Download geometry
 
 The radius is geodesic from the current GPS fix in the four cardinal directions. A 2 km selection therefore defines a 4 km × 4 km square centered on the marker. Tile rows/columns that intersect that square are downloaded; the unavoidable excess is at most the outer tile boundaries.
+
+
+## Initial map scale
+
+`SettingsStore.initialMapScaleMeters` persists a user-selected reference scale (50–5000 m, default 500 m). MapLibre zoom is derived at runtime from latitude, view width and density using the same reference-pixel formula as the on-screen ↔ scale indicator. Startup and «Я здесь» recenter therefore use the configured scale instead of a hard-coded zoom.
+
+## Large-region preparation
+
+Expected tile count is computed from tile ranges mathematically. Resume statistics walk only existing PNG files. The downloader no longer probes every theoretical z/x/y path before starting, which avoids the multi-million filesystem-check stall seen with 50 km regions.

@@ -38,6 +38,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.log2
 import kotlin.math.pow
 
 private class NativeMapState {
@@ -67,6 +68,7 @@ fun ForestMapView(
     waypoints: List<Waypoint>,
     layer: MapLayer,
     online: Boolean,
+    initialScaleMeters: Double = DEFAULT_INITIAL_SCALE_METERS,
     recenterToken: Int = 0,
     pointPlacementEnabled: Boolean = false,
     onMapClick: (Double, Double) -> Unit = { _, _ -> },
@@ -196,7 +198,13 @@ fun ForestMapView(
 
                     map.cameraPosition = CameraPosition.Builder()
                         .target(LatLng(location.latitude, location.longitude))
-                        .zoom(INITIAL_ZOOM)
+                        .zoom(
+                            zoomForScale(
+                                latitude = location.latitude,
+                                scaleMeters = initialScaleMeters,
+                                mapView = mapView
+                            )
+                        )
                         .bearing(0.0)
                         .tilt(0.0)
                         .build()
@@ -209,7 +217,9 @@ fun ForestMapView(
                         styleKey = styleKey,
                         styleJson = styleJson,
                         location = location,
-                        waypoints = waypoints
+                        waypoints = waypoints,
+                        mapView = mapView,
+                        initialScaleMeters = initialScaleMeters
                     )
 
                     mapView.post {
@@ -238,7 +248,9 @@ fun ForestMapView(
                     styleKey = styleKey,
                     styleJson = styleJson,
                     location = location,
-                    waypoints = waypoints
+                    waypoints = waypoints,
+                    mapView = mapView,
+                    initialScaleMeters = initialScaleMeters
                 )
                 return@AndroidView
             }
@@ -252,7 +264,11 @@ fun ForestMapView(
                 enableNativeFollow(
                     map = map,
                     location = location,
-                    minimumZoom = INITIAL_ZOOM,
+                    minimumZoom = zoomForScale(
+                        latitude = location.latitude,
+                        scaleMeters = initialScaleMeters,
+                        mapView = mapView
+                    ),
                     transitionDurationMs = 550L
                 )
                 state.lastRecenterToken = recenterToken
@@ -297,7 +313,9 @@ private fun applyStyle(
     styleKey: String,
     styleJson: String?,
     location: Location,
-    waypoints: List<Waypoint>
+    waypoints: List<Waypoint>,
+    mapView: MapView,
+    initialScaleMeters: Double
 ) {
     val json = styleJson ?: return
     if (styleKey == state.loadedStyle || styleKey == state.loadingStyle) return
@@ -324,7 +342,11 @@ private fun applyStyle(
             enableNativeFollow(
                 map = map,
                 location = location,
-                minimumZoom = INITIAL_ZOOM,
+                minimumZoom = zoomForScale(
+                    latitude = location.latitude,
+                    scaleMeters = initialScaleMeters,
+                    mapView = mapView
+                ),
                 transitionDurationMs = 650L
             )
             state.initialCameraAnimationDone = true
@@ -418,7 +440,7 @@ private fun enableNativeFollow(
     component.renderMode = RenderMode.COMPASS
     component.setMaxAnimationFps(60)
 
-    val targetZoom = minimumZoom?.let { maxOf(map.cameraPosition.zoom, it) }
+    val targetZoom = minimumZoom
     component.setCameraMode(
         CameraMode.TRACKING_COMPASS,
         transitionDurationMs,
@@ -512,4 +534,31 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
 
-private const val INITIAL_ZOOM = 18.35
+private fun zoomForScale(
+    latitude: Double,
+    scaleMeters: Double,
+    mapView: MapView
+): Double {
+    val safeScale = scaleMeters.coerceIn(50.0, 5_000.0)
+    val density = mapView.resources.displayMetrics.density
+    val referencePixels = if (mapView.width > 0) {
+        minOf(
+            mapView.width * 0.32,
+            160.0 * density
+        )
+    } else {
+        160.0 * density
+    }
+
+    val numerator =
+        156543.03392 *
+            cos(Math.toRadians(latitude))
+                .coerceAtLeast(0.05) *
+            referencePixels
+
+    return log2(
+        numerator / safeScale
+    ).coerceIn(2.0, 23.0)
+}
+
+private const val DEFAULT_INITIAL_SCALE_METERS = 500.0

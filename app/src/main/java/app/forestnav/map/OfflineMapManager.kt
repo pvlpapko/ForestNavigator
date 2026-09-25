@@ -222,13 +222,23 @@ class OfflineMapManager(context: Context) {
     }
 
     fun completedStats(meta: RegionMeta): Pair<Long, Long> {
+        val dir = regionDir(meta.id)
+        if (!dir.isDirectory) return 0L to 0L
+
         var count = 0L
         var bytes = 0L
 
-        tileTasks(meta).forEach { task ->
-            if (task.file.isFile && task.file.length() > MIN_TILE_BYTES) {
+        // Scan only files that actually exist. The old implementation walked
+        // every theoretical z/x/y tile path, which can mean millions of
+        // filesystem checks for a 50 km radius before the first request starts.
+        dir.walkTopDown().forEach { file ->
+            if (
+                file.isFile &&
+                file.extension.equals("png", ignoreCase = true) &&
+                file.length() > MIN_TILE_BYTES
+            ) {
                 count += 1L
-                bytes += task.file.length()
+                bytes += file.length()
             }
         }
 

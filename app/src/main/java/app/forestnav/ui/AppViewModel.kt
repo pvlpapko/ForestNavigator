@@ -65,6 +65,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val mapLayer =
         _mapLayer.asStateFlow()
 
+    private val _initialMapScaleMeters =
+        MutableStateFlow(app.settings.initialMapScaleMeters)
+    val initialMapScaleMeters =
+        _initialMapScaleMeters.asStateFlow()
+
     private val _offlineRegions =
         MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     val offlineRegions =
@@ -157,6 +162,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLayer(layer: MapLayer) {
         _mapLayer.value = layer
+    }
+
+    fun setInitialMapScaleMeters(value: Int) {
+        app.settings.initialMapScaleMeters = value
+        _initialMapScaleMeters.value =
+            app.settings.initialMapScaleMeters
     }
 
     fun setNavigationTarget(waypoint: Waypoint?) {
@@ -321,7 +332,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val minZoom =
             when {
-                radiusKm >= 100.0 -> 7.0
                 radiusKm >= 50.0 -> 8.0
                 radiusKm >= 25.0 -> 9.0
                 else -> 10.0

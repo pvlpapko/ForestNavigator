@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.forestnav.data.Waypoint
@@ -41,6 +43,7 @@ fun MapScreen(vm: AppViewModel) {
     val navigationTarget by vm.navigationTarget.collectAsState()
     val heading by vm.heading.collectAsState()
     val online by vm.online.collectAsState()
+    val initialMapScaleMeters by vm.initialMapScaleMeters.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -147,6 +150,7 @@ fun MapScreen(vm: AppViewModel) {
                         waypoints = waypoints,
                         layer = layer,
                         online = online,
+                        initialScaleMeters = initialMapScaleMeters.toDouble(),
                         recenterToken = recenterToken,
                         pointPlacementEnabled = pointPlacementMode,
                         onMapClick = mapClick,
@@ -807,7 +811,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf(2.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { r ->
+                listOf(2.0, 5.0, 10.0, 25.0, 50.0).forEach { r ->
                     FilterChip(
                         selected = radius == r,
                         onClick = { radius = r },
@@ -1001,6 +1005,14 @@ private fun OfflineScreen(vm: AppViewModel) {
 private fun SettingsScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
+    val initialScale by vm.initialMapScaleMeters.collectAsState()
+    var scaleText by remember(initialScale) {
+        mutableStateOf(initialScale.toString())
+    }
+    val parsedScale = scaleText.toIntOrNull()
+    val scaleValid =
+        parsedScale != null &&
+            parsedScale in 50..5000
 
     Column(
         Modifier
@@ -1012,7 +1024,6 @@ private fun SettingsScreen(vm: AppViewModel) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
             "Карта — Open OSM Style. Спутник — Open Hybrid. " +
-                "Режимы «Рельеф» и «Спутник+рельеф» удалены. " +
                 "Обе карты работают через один MapLibre-движок онлайн и офлайн."
         )
         AssistChip(
@@ -1023,11 +1034,79 @@ private fun SettingsScreen(vm: AppViewModel) {
 
         HorizontalDivider()
 
+        Text(
+            "Начальное приближение",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Text(
+            "Это значение индикатора ↔ при первом переходе к GPS-метке " +
+                "и после нажатия «Я здесь». Сейчас по умолчанию 500 м."
+        )
+        OutlinedTextField(
+            value = scaleText,
+            onValueChange = { value ->
+                scaleText = value.filter { it.isDigit() }.take(4)
+            },
+            label = { Text("Масштаб, м") },
+            supportingText = {
+                Text(
+                    if (scaleValid) {
+                        "Допустимо 50–5000 м"
+                    } else {
+                        "Введите значение от 50 до 5000 м"
+                    }
+                )
+            },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number
+            ),
+            singleLine = true,
+            isError = scaleText.isNotBlank() && !scaleValid,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(100, 200, 500, 1000, 2000).forEach { value ->
+                FilterChip(
+                    selected = parsedScale == value,
+                    onClick = {
+                        scaleText = value.toString()
+                        vm.setInitialMapScaleMeters(value)
+                    },
+                    label = { Text("$value м") }
+                )
+            }
+        }
+
+        Button(
+            onClick = {
+                parsedScale?.let(vm::setInitialMapScaleMeters)
+            },
+            enabled = scaleValid
+        ) {
+            Text("Сохранить масштаб")
+        }
+
+        Text(
+            "Сохранено: $initialScale м. Изменение применяется при следующем " +
+                "центрировании на GPS-метке и при новом запуске карты.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        HorizontalDivider()
+
         Text("Загрузка карт", style = MaterialTheme.typography.titleMedium)
         Text(
             "Офлайн-карты скачиваются прямыми HTTP-запросами без MapLibre OfflineManager. " +
                 "Одна область использует до 48 параллельных загрузок, общий сетевой пул — до 96 запросов. " +
-                "Спутниковая подложка и подписи загружаются одновременно с разных серверов. Собственного ограничения скорости у приложения нет."
+                "Спутниковая подложка и подписи загружаются одновременно с разных серверов. " +
+                "Собственного ограничения скорости у приложения нет."
         )
 
         HorizontalDivider()
