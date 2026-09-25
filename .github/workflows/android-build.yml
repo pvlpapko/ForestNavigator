@@ -85,6 +85,18 @@ jobs:
             "$RUNNER_TEMP/arcgis-key.rsa" \
             "$RUNNER_TEMP/arcgis-key.txt"
 
+      - name: Validate Open Basemap styles
+        run: |
+          set -euo pipefail
+          for STYLE in osm-style hybrid; do
+            URL="https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/open/$STYLE?f=json&language=ru"
+            CODE="$(curl --silent --show-error --location --output "$RUNNER_TEMP/$STYLE.json" --write-out "%{http_code}" \
+              -H "Authorization: Bearer $ARCGIS_API_KEY" "$URL")"
+            test "$CODE" = "200"
+            grep -q '"version"[[:space:]]*:[[:space:]]*8' "$RUNNER_TEMP/$STYLE.json"
+            rm -f "$RUNNER_TEMP/$STYLE.json"
+          done
+
       - name: Build signed updateable APK
         if: ${{ env.FORESTNAV_KEYSTORE_B64 != '' }}
         env:

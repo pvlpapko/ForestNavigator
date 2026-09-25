@@ -324,7 +324,10 @@ private fun applyStyle(
         }
     }
 
-    map.setStyle(url, onLoaded)
+    map.setStyle(
+        Style.Builder().fromUri(url),
+        onLoaded
+    )
 }
 
 @SuppressLint("MissingPermission")
