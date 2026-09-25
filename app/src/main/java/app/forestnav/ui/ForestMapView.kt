@@ -17,6 +17,7 @@ import app.forestnav.map.MapLayer
 import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineLayerRole
 import app.forestnav.map.OfflineMapManager
+import app.forestnav.map.OfflinePackageFormat
 import com.arcgismaps.Color
 import com.arcgismaps.geometry.GeometryEngine
 import com.arcgismaps.geometry.Point
@@ -28,6 +29,8 @@ import com.arcgismaps.mapping.ArcGISMap
 import com.arcgismaps.mapping.Basemap
 import com.arcgismaps.mapping.Viewpoint
 import com.arcgismaps.mapping.layers.ArcGISTiledLayer
+import com.arcgismaps.mapping.layers.ArcGISVectorTiledLayer
+import com.arcgismaps.mapping.layers.Layer
 import com.arcgismaps.mapping.layers.TileCache
 import com.arcgismaps.mapping.symbology.TextSymbol
 import com.arcgismaps.mapping.view.Graphic
@@ -45,61 +48,74 @@ import java.time.Instant
 import kotlin.math.abs
 
 private class AppLocationProvider(
-    locations: StateFlow<Location?>,
-    headings: StateFlow<Float?>
+    sourceLocations: StateFlow<Location?>,
+    sourceHeadings: StateFlow<Float?>
 ) : CustomLocationDataSource.LocationProvider {
+
     override val locations: Flow<ArcGISLocation> =
-        locations.filterNotNull().map(::toArcGISLocation)
+        sourceLocations
+            .filterNotNull()
+            .map(::toArcGISLocation)
 
     override val headings: Flow<Double> =
-        headings.filterNotNull().map { it.toDouble() }
+        sourceHeadings
+            .filterNotNull()
+            .map { it.toDouble() }
 }
 
 private class ArcMapState {
     val waypointOverlay = GraphicsOverlay()
-    var waypointFingerprint: Int = 0
-    var currentLayer: MapLayer? = null
-    var currentOnline: Boolean? = null
-    var recenterToken: Int = -1
-    var inputJobs: List<Job> = emptyList()
-    var locationJob: Job? = null
-    var lastScale: Double = 0.0
-
-    val currentLocation = MutableStateFlow<Location?>(null)
-    val currentHeading = MutableStateFlow<Float?>(null)
+    val location = MutableStateFlow<Location?>(null)
+    val heading = MutableStateFlow<Float?>(null)
 
     val locationDataSource = CustomLocationDataSource {
-        AppLocationProvider(currentLocation, currentHeading)
+        AppLocationProvider(location, heading)
     }
 
-    private var lastLocationElapsedNs: Long = Long.MIN_VALUE
-    private var lastLocationTimeMs: Long = Long.MIN_VALUE
-    private var lastLatitude: Double = Double.NaN
-    private var lastLongitude: Double = Double.NaN
+    var layer: MapLayer? = null
+    var online: Boolean? = null
+    var offlineRegionId: Long? = null
+    var recenterToken: Int = -1
 
-    fun updateLocation(location: Location) {
-        val elapsedNs = location.elapsedRealtimeNanos
-        val sameSample = if (elapsedNs > 0L && lastLocationElapsedNs > 0L) {
-            elapsedNs == lastLocationElapsedNs
-        } else {
-            location.time == lastLocationTimeMs &&
-                location.latitude == lastLatitude &&
-                location.longitude == lastLongitude
-        }
-        if (sameSample) return
+    var waypointFingerprint: Int = 0
+    var inputJobs: List<Job> = emptyList()
+    var locationStartJob: Job? = null
+    var lastScaleMeters: Double = 0.0
+
+    private var lastLocationElapsedNs = Long.MIN_VALUE
+    private var lastLocationTimeMs = Long.MIN_VALUE
+    private var lastLatitude = Double.NaN
+    private var lastLongitude = Double.NaN
+
+    fun submitLocation(value: Location) {
+        val elapsedNs = value.elapsedRealtimeNanos
+        val duplicate =
+            if (elapsedNs > 0L && lastLocationElapsedNs > 0L) {
+                elapsedNs == lastLocationElapsedNs
+            } else {
+                value.time == lastLocationTimeMs &&
+                    value.latitude == lastLatitude &&
+                    value.longitude == lastLongitude
+            }
+
+        if (duplicate) return
 
         lastLocationElapsedNs = elapsedNs
-        lastLocationTimeMs = location.time
-        lastLatitude = location.latitude
-        lastLongitude = location.longitude
-        currentLocation.value = Location(location)
+        lastLocationTimeMs = value.time
+        lastLatitude = value.latitude
+        lastLongitude = value.longitude
+        location.value = Location(value)
     }
 
-    fun updateHeading(heading: Float?) {
-        if (heading == null) return
-        val previous = currentHeading.value
-        if (previous == null || kotlin.math.abs(shortestAngle(heading - previous)) >= 0.05f) {
-            currentHeading.value = heading
+    fun submitHeading(value: Float?) {
+        if (value == null) return
+
+        val previous = heading.value
+        if (
+            previous == null ||
+            abs(shortestAngle(value - previous)) >= HEADING_UPDATE_EPSILON
+        ) {
+            heading.value = value
         }
     }
 }
@@ -122,6 +138,7 @@ fun ForestMapView(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+
     val mapView = remember { MapView(context) }
     val state = remember { ArcMapState() }
     val offline = remember { OfflineMapManager(context) }
@@ -139,11 +156,11 @@ fun ForestMapView(
         location.latitude,
         location.longitude
     ) {
-        state.updateLocation(location)
+        state.submitLocation(location)
     }
 
     LaunchedEffect(heading) {
-        state.updateHeading(heading)
+        state.submitHeading(heading)
     }
 
     DisposableEffect(mapView, lifecycleOwner) {
@@ -153,7 +170,7 @@ fun ForestMapView(
         state.inputJobs = listOf(
             scope.launch {
                 mapView.onSingleTapConfirmed.collectLatest { event ->
-                    val identify = mapView.identifyGraphicsOverlay(
+                    val identified = mapView.identifyGraphicsOverlay(
                         graphicsOverlay = state.waypointOverlay,
                         screenCoordinate = event.screenCoordinate,
                         tolerance = 26.0,
@@ -161,41 +178,53 @@ fun ForestMapView(
                         maximumResults = 1
                     ).getOrNull()
 
-                    val id = identify?.geoElements
+                    val waypointId = identified
+                        ?.geoElements
                         ?.firstOrNull()
                         ?.attributes
                         ?.get(WAYPOINT_ID)
                         ?.toString()
                         ?.toLongOrNull()
 
-                    val waypoint = id?.let { wanted ->
-                        currentWaypoints.value.firstOrNull { it.id == wanted }
+                    val waypoint = waypointId?.let { id ->
+                        currentWaypoints.value.firstOrNull {
+                            it.id == id
+                        }
                     }
 
                     if (waypoint != null) {
                         currentWaypointClick.value(waypoint)
                     } else if (currentPlacement.value) {
-                        toWgs84(mapView.screenToLocation(event.screenCoordinate))?.let {
-                            currentMapClick.value(it.y, it.x)
+                        toWgs84(
+                            mapView.screenToLocation(event.screenCoordinate)
+                        )?.let { point ->
+                            currentMapClick.value(point.y, point.x)
                         }
                     }
                 }
             },
             scope.launch {
                 mapView.onLongPress.collectLatest { event ->
-                    toWgs84(mapView.screenToLocation(event.screenCoordinate))?.let {
-                        currentLongPress.value(it.y, it.x)
+                    toWgs84(
+                        mapView.screenToLocation(event.screenCoordinate)
+                    )?.let { point ->
+                        currentLongPress.value(point.y, point.x)
                     }
                 }
             },
             scope.launch {
                 mapView.viewpointChanged.collectLatest {
-                    val scaleMeters = (mapView.unitsPerDip * 160.0).coerceAtLeast(0.1)
-                    if (state.lastScale <= 0.0 ||
-                        abs(scaleMeters - state.lastScale) /
-                            state.lastScale.coerceAtLeast(0.1) > 0.025
-                    ) {
-                        state.lastScale = scaleMeters
+                    val scaleMeters =
+                        (mapView.unitsPerDip * 160.0).coerceAtLeast(0.1)
+
+                    val previous = state.lastScaleMeters
+                    val changed =
+                        previous <= 0.0 ||
+                            abs(scaleMeters - previous) /
+                            previous.coerceAtLeast(0.1) > 0.025
+
+                    if (changed) {
+                        state.lastScaleMeters = scaleMeters
                         currentScaleCallback.value(scaleMeters)
                     }
                 }
@@ -205,10 +234,14 @@ fun ForestMapView(
         onDispose {
             state.inputJobs.forEach { it.cancel() }
             state.inputJobs = emptyList()
-            state.locationJob?.cancel()
-            state.locationJob = null
+
+            state.locationStartJob?.cancel()
+            state.locationStartJob = null
+
             lifecycleOwner.lifecycle.removeObserver(mapView)
-            runCatching { mapView.onDestroy(lifecycleOwner) }
+            runCatching {
+                mapView.onDestroy(lifecycleOwner)
+            }
         }
     }
 
@@ -217,6 +250,7 @@ fun ForestMapView(
         factory = {
             mapView.apply {
                 isAttributionBarVisible = true
+
                 setViewpoint(
                     Viewpoint(
                         Point(
@@ -227,58 +261,233 @@ fun ForestMapView(
                         INITIAL_SCALE
                     )
                 )
-                state.recenterToken = recenterToken
-                state.updateLocation(location)
-                state.updateHeading(heading)
 
-                applyLayer(
+                state.recenterToken = recenterToken
+                state.submitLocation(location)
+                state.submitHeading(heading)
+
+                val selection = offlineSelection(
+                    offline = offline,
+                    online = online,
+                    layer = layer,
+                    location = location
+                )
+
+                installMap(
                     mapView = this,
                     state = state,
-                    offline = offline,
                     layer = layer,
-                    online = online
+                    online = online,
+                    selection = selection
                 )
-                configureWalkingLocationDisplay(this, state, scope)
+
+                configureLocationDisplay(
+                    mapView = this,
+                    state = state,
+                    scope = scope
+                )
+
                 updateWaypoints(state, waypoints)
             }
         },
         update = { view ->
-            // Rebuild only when the selected layer or the stable, validated
-            // connectivity state really changed. Offline mode must replace the
-            // network basemap with local tile packages.
-            if (state.currentLayer != layer || state.currentOnline != online) {
-                applyLayer(view, state, offline, layer, online)
-                view.locationDisplay.setAutoPanMode(
-                    LocationDisplayAutoPanMode.CompassNavigation
+            val selection = offlineSelection(
+                offline = offline,
+                online = online,
+                layer = layer,
+                location = location
+            )
+
+            val mapChanged =
+                state.layer != layer ||
+                    state.online != online ||
+                    (
+                        !online &&
+                            state.offlineRegionId != selection?.regionId
+                        )
+
+            if (mapChanged) {
+                installMap(
+                    mapView = view,
+                    state = state,
+                    layer = layer,
+                    online = online,
+                    selection = selection
                 )
+
+                scope.launch {
+                    view.locationDisplay.setAutoPanMode(
+                        LocationDisplayAutoPanMode.CompassNavigation
+                    )
+                }
             }
 
             updateWaypoints(state, waypoints)
 
             if (state.recenterToken != recenterToken) {
                 state.recenterToken = recenterToken
+
                 scope.launch {
                     val center = Point(
                         location.longitude,
                         location.latitude,
                         SpatialReference.wgs84()
                     )
-                    view.setViewpointCenter(center, RECENTER_SCALE)
-                    val display = view.locationDisplay
-                    display.initialZoomScale = RECENTER_SCALE
-                    display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
+
+                    view.setViewpointCenter(
+                        center,
+                        RECENTER_SCALE
+                    )
+
+                    view.locationDisplay.initialZoomScale =
+                        RECENTER_SCALE
+
+                    view.locationDisplay.setAutoPanMode(
+                        LocationDisplayAutoPanMode.CompassNavigation
+                    )
                 }
             }
         }
     )
 }
 
-private fun configureWalkingLocationDisplay(
+private fun offlineSelection(
+    offline: OfflineMapManager,
+    online: Boolean,
+    layer: MapLayer,
+    location: Location
+): OfflineMapManager.OfflineSelection? {
+    if (online) return null
+
+    return offline.selectionFor(
+        layer = layer,
+        latitude = location.latitude,
+        longitude = location.longitude
+    )
+}
+
+private fun installMap(
+    mapView: MapView,
+    state: ArcMapState,
+    layer: MapLayer,
+    online: Boolean,
+    selection: OfflineMapManager.OfflineSelection?
+) {
+    val currentViewpoint = mapView.getCurrentViewpoint(
+        com.arcgismaps.mapping.ViewpointType.CenterAndScale
+    )
+
+    val map = if (online) {
+        createOnlineMap(
+            layer = layer,
+            currentViewpoint = currentViewpoint
+        )
+    } else {
+        createOfflineMap(
+            selection = selection,
+            currentViewpoint = currentViewpoint
+        )
+    }
+
+    mapView.map = map
+
+    state.layer = layer
+    state.online = online
+    state.offlineRegionId = selection?.regionId
+}
+
+private fun createOnlineMap(
+    layer: MapLayer,
+    currentViewpoint: Viewpoint?
+): ArcGISMap =
+    ArcGISMap(MapStyles.basemapStyle(layer)).apply {
+        initialViewpoint = currentViewpoint
+
+        if (layer == MapLayer.SATELLITE_TERRAIN) {
+            operationalLayers.add(
+                ArcGISTiledLayer(
+                    MapStyles.HILLSHADE_ONLINE
+                ).apply {
+                    opacity = 0.22f
+                }
+            )
+        }
+    }
+
+private fun createOfflineMap(
+    selection: OfflineMapManager.OfflineSelection?,
+    currentViewpoint: Viewpoint?
+): ArcGISMap {
+    if (selection == null) {
+        return ArcGISMap(
+            SpatialReference.webMercator()
+        ).apply {
+            initialViewpoint = currentViewpoint
+        }
+    }
+
+    val baseLayers = mutableListOf<Layer>()
+    val referenceLayers = mutableListOf<Layer>()
+    val overlays = mutableListOf<Layer>()
+
+    selection.packages.forEach { item ->
+        val localLayer: Layer =
+            when (item.format) {
+                OfflinePackageFormat.RASTER ->
+                    ArcGISTiledLayer(
+                        TileCache(item.file.absolutePath)
+                    )
+
+                OfflinePackageFormat.VECTOR ->
+                    ArcGISVectorTiledLayer(
+                        item.file.absolutePath
+                    )
+            }
+
+        localLayer.opacity = item.opacity
+
+        when (item.role) {
+            OfflineLayerRole.BASE ->
+                baseLayers += localLayer
+
+            OfflineLayerRole.HILLSHADE ->
+                overlays += localLayer
+
+            OfflineLayerRole.REFERENCE ->
+                referenceLayers += localLayer
+        }
+    }
+
+    if (
+        baseLayers.isEmpty() &&
+        referenceLayers.isEmpty() &&
+        overlays.isEmpty()
+    ) {
+        return ArcGISMap(
+            SpatialReference.webMercator()
+        ).apply {
+            initialViewpoint = currentViewpoint
+        }
+    }
+
+    return ArcGISMap(
+        Basemap(
+            baseLayers = baseLayers,
+            referenceLayers = referenceLayers
+        )
+    ).apply {
+        initialViewpoint = currentViewpoint
+        operationalLayers.addAll(overlays)
+    }
+}
+
+private fun configureLocationDisplay(
     mapView: MapView,
     state: ArcMapState,
     scope: kotlinx.coroutines.CoroutineScope
 ) {
     val display = mapView.locationDisplay
+
     display.showLocation = true
     display.showAccuracy = true
     display.showPingAnimationSymbol = false
@@ -287,11 +496,15 @@ private fun configureWalkingLocationDisplay(
     display.navigationPointHeightFactor = 0.5f
     display.dataSource = state.locationDataSource
 
-    state.locationJob?.cancel()
-    state.locationJob = scope.launch {
-        state.locationDataSource.start().onSuccess {
-            display.setAutoPanMode(LocationDisplayAutoPanMode.CompassNavigation)
-        }
+    state.locationStartJob?.cancel()
+    state.locationStartJob = scope.launch {
+        state.locationDataSource
+            .start()
+            .onSuccess {
+                display.setAutoPanMode(
+                    LocationDisplayAutoPanMode.CompassNavigation
+                )
+            }
     }
 }
 
@@ -302,107 +515,40 @@ private fun toArcGISLocation(source: Location): ArcGISLocation =
             source.latitude,
             SpatialReference.wgs84()
         ),
-        horizontalAccuracy = if (source.hasAccuracy()) {
-            source.accuracy.toDouble()
-        } else {
-            Double.NaN
-        },
-        verticalAccuracy = if (source.hasVerticalAccuracy()) {
-            source.verticalAccuracyMeters.toDouble()
-        } else {
-            Double.NaN
-        },
-        speed = if (source.hasSpeed()) {
-            source.speed.toDouble()
-        } else {
-            Double.NaN
-        },
-        course = if (source.hasBearing()) {
-            source.bearing.toDouble()
-        } else {
-            Double.NaN
-        },
-        lastKnown = System.currentTimeMillis() - source.time > LAST_KNOWN_AFTER_MS,
+        horizontalAccuracy =
+            if (source.hasAccuracy()) {
+                source.accuracy.toDouble()
+            } else {
+                Double.NaN
+            },
+        verticalAccuracy =
+            if (source.hasVerticalAccuracy()) {
+                source.verticalAccuracyMeters.toDouble()
+            } else {
+                Double.NaN
+            },
+        speed =
+            if (source.hasSpeed()) {
+                source.speed.toDouble()
+            } else {
+                Double.NaN
+            },
+        course =
+            if (source.hasBearing()) {
+                source.bearing.toDouble()
+            } else {
+                Double.NaN
+            },
+        lastKnown =
+            System.currentTimeMillis() - source.time >
+                LAST_KNOWN_AFTER_MS,
         timestamp = Instant.ofEpochMilli(source.time)
     )
 
-private fun applyLayer(
-    mapView: MapView,
+private fun updateWaypoints(
     state: ArcMapState,
-    offline: OfflineMapManager,
-    layer: MapLayer,
-    online: Boolean
+    waypoints: List<Waypoint>
 ) {
-    val currentViewpoint = mapView.getCurrentViewpoint(
-        com.arcgismaps.mapping.ViewpointType.CenterAndScale
-    )
-
-    val map = if (online) {
-        ArcGISMap(MapStyles.basemapStyle(layer)).apply {
-            initialViewpoint = currentViewpoint
-
-            if (layer == MapLayer.SATELLITE_TERRAIN) {
-                operationalLayers.add(
-                    ArcGISTiledLayer(MapStyles.HILLSHADE_ONLINE).apply {
-                        opacity = 0.22f
-                    }
-                )
-            }
-        }
-    } else {
-        val packages = offline.packagesFor(layer)
-            .sortedBy {
-                when (it.role) {
-                    OfflineLayerRole.BASE -> 0
-                    OfflineLayerRole.HILLSHADE -> 1
-                    OfflineLayerRole.REFERENCE -> 2
-                }
-            }
-
-        val baseLayers = mutableListOf<ArcGISTiledLayer>()
-        val referenceLayers = mutableListOf<ArcGISTiledLayer>()
-        val overlayLayers = mutableListOf<ArcGISTiledLayer>()
-
-        packages.forEach { item ->
-            val tiledLayer = ArcGISTiledLayer(
-                TileCache(item.file.absolutePath)
-            ).apply {
-                opacity = item.opacity
-            }
-
-            when (item.role) {
-                OfflineLayerRole.BASE -> baseLayers += tiledLayer
-                OfflineLayerRole.HILLSHADE -> overlayLayers += tiledLayer
-                OfflineLayerRole.REFERENCE -> referenceLayers += tiledLayer
-            }
-        }
-
-        if (baseLayers.isNotEmpty() || referenceLayers.isNotEmpty()) {
-            ArcGISMap(
-                Basemap(
-                    baseLayers = baseLayers,
-                    referenceLayers = referenceLayers
-                )
-            ).apply {
-                initialViewpoint = currentViewpoint
-                operationalLayers.addAll(overlayLayers)
-            }
-        } else {
-            // Even when no package exists for the selected layer, keep a valid
-            // offline map spatial reference so GPS/waypoint graphics still render.
-            ArcGISMap(SpatialReference.webMercator()).apply {
-                initialViewpoint = currentViewpoint
-                operationalLayers.addAll(overlayLayers)
-            }
-        }
-    }
-
-    mapView.map = map
-    state.currentLayer = layer
-    state.currentOnline = online
-}
-
-private fun updateWaypoints(state: ArcMapState, waypoints: List<Waypoint>) {
     val fingerprint = waypoints.fold(1) { acc, waypoint ->
         var value = 31 * acc + waypoint.id.hashCode()
         value = 31 * value + waypoint.latitude.hashCode()
@@ -410,17 +556,25 @@ private fun updateWaypoints(state: ArcMapState, waypoints: List<Waypoint>) {
         value = 31 * value + waypoint.type.hashCode()
         value
     }
+
     if (fingerprint == state.waypointFingerprint) return
 
     state.waypointOverlay.graphics.clear()
+
     waypoints.forEach { waypoint ->
         val symbol = TextSymbol().apply {
             text = waypointSymbol(waypoint.type)
             size = 23.0f
             color = Color.white
-            haloColor = Color.fromRgba(20, 28, 23, 255)
+            haloColor = Color.fromRgba(
+                20,
+                28,
+                23,
+                255
+            )
             haloWidth = 2.0f
         }
+
         val graphic = Graphic(
             Point(
                 waypoint.longitude,
@@ -429,30 +583,39 @@ private fun updateWaypoints(state: ArcMapState, waypoints: List<Waypoint>) {
             ),
             symbol
         )
+
         graphic.attributes[WAYPOINT_ID] = waypoint.id
         state.waypointOverlay.graphics.add(graphic)
     }
+
     state.waypointFingerprint = fingerprint
 }
 
-private fun waypointSymbol(type: WaypointType): String = when (type) {
-    WaypointType.CAR -> "🚗"
-    WaypointType.MUSHROOM -> "🍄"
-    WaypointType.WATER -> "💧"
-    WaypointType.DANGER -> "⚠"
-    WaypointType.FAVORITE -> "★"
-    WaypointType.CUSTOM -> "📍"
-}
+private fun waypointSymbol(type: WaypointType): String =
+    when (type) {
+        WaypointType.CAR -> "🚗"
+        WaypointType.MUSHROOM -> "🍄"
+        WaypointType.WATER -> "💧"
+        WaypointType.DANGER -> "⚠"
+        WaypointType.FAVORITE -> "★"
+        WaypointType.CUSTOM -> "📍"
+    }
 
 private fun toWgs84(point: Point?): Point? {
     if (point == null) return null
-    return GeometryEngine.projectOrNull(point, SpatialReference.wgs84())
+
+    return GeometryEngine.projectOrNull(
+        point,
+        SpatialReference.wgs84()
+    )
 }
 
 private fun shortestAngle(value: Float): Float {
     var delta = value % 360f
+
     if (delta > 180f) delta -= 360f
     if (delta < -180f) delta += 360f
+
     return delta
 }
 
@@ -460,3 +623,4 @@ private const val WAYPOINT_ID = "waypointId"
 private const val INITIAL_SCALE = 7_500.0
 private const val RECENTER_SCALE = 3_500.0
 private const val LAST_KNOWN_AFTER_MS = 5_000L
+private const val HEADING_UPDATE_EPSILON = 0.05f

@@ -27,47 +27,49 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
+
     private val app = application as ForestNavApplication
-    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val _online = MutableStateFlow(hasValidatedInternet())
-    val online = _online.asStateFlow()
-    private var connectivityRefreshJob: Job? = null
-
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            scheduleConnectivityRefresh()
-        }
-
-        override fun onLost(network: Network) {
-            scheduleConnectivityRefresh(immediate = true)
-        }
-
-        override fun onCapabilitiesChanged(
-            network: Network,
-            networkCapabilities: NetworkCapabilities
-        ) {
-            scheduleConnectivityRefresh()
-        }
-    }
+    private val connectivity =
+        application.getSystemService(ConnectivityManager::class.java)
 
     val gnss = GnssEngine(application)
     val compass = CompassEngine(application)
+
     private val offline = OfflineMapManager(application)
 
     val location = gnss.location
     val satellites = gnss.satellites
     val heading = compass.heading
+    val downloads = OfflineMapDownloadState.progress
 
-    private val _waypoints = MutableStateFlow<List<Waypoint>>(emptyList())
-    val waypoints: StateFlow<List<Waypoint>> = _waypoints.asStateFlow()
+    private val _online =
+        MutableStateFlow(hasValidatedInternet())
+    val online = _online.asStateFlow()
 
-    private val _navigationTarget = MutableStateFlow<Waypoint?>(null)
-    val navigationTarget = _navigationTarget.asStateFlow()
+    private val _waypoints =
+        MutableStateFlow<List<Waypoint>>(emptyList())
+    val waypoints: StateFlow<List<Waypoint>> =
+        _waypoints.asStateFlow()
 
-    private val _mapLayer = MutableStateFlow(MapLayer.MAP)
-    val mapLayer = _mapLayer.asStateFlow()
+    private val _navigationTarget =
+        MutableStateFlow<Waypoint?>(null)
+    val navigationTarget =
+        _navigationTarget.asStateFlow()
+
+    private val _mapLayer =
+        MutableStateFlow(MapLayer.MAP)
+    val mapLayer =
+        _mapLayer.asStateFlow()
+
+    private val _offlineRegions =
+        MutableStateFlow<List<Pair<Long, String>>>(emptyList())
+    val offlineRegions =
+        _offlineRegions.asStateFlow()
 
     data class PreciseState(
         val active: Boolean = false,
@@ -76,28 +78,63 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val label: String = "",
         val error: String? = null
     )
-    private val _preciseState = MutableStateFlow(PreciseState())
-    val preciseState = _preciseState.asStateFlow()
+
+    private val _preciseState =
+        MutableStateFlow(PreciseState())
+    val preciseState =
+        _preciseState.asStateFlow()
+
     private var preciseJob: Job? = null
+    private var connectivityRefreshJob: Job? = null
     private var foregroundActive = false
 
-    val downloads = OfflineMapDownloadState.progress
+    private val networkCallback =
+        object : ConnectivityManager.NetworkCallback() {
 
-    private val _offlineRegions = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
-    val offlineRegions = _offlineRegions.asStateFlow()
+            override fun onAvailable(network: Network) {
+                scheduleConnectivityRefresh()
+            }
+
+            override fun onLost(network: Network) {
+                scheduleConnectivityRefresh(immediate = true)
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
+                scheduleConnectivityRefresh()
+            }
+        }
 
     init {
-        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+        runCatching {
+            connectivity.registerDefaultNetworkCallback(
+                networkCallback
+            )
+        }
+
         _online.value = hasValidatedInternet()
-        refreshWaypoints()
-        refreshOfflineRegions()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            offline.cleanupLegacyStorage()
+            refreshWaypointsInternal()
+            refreshOfflineRegionsInternal()
+        }
+
         viewModelScope.launch {
             downloads.collectLatest { states ->
-                if (states.values.any {
-                        it.complete || it.cancelled || it.error != null
+                val catalogMayHaveChanged =
+                    states.values.any {
+                        it.complete ||
+                            it.cancelled ||
+                            it.error != null
                     }
-                ) {
-                    refreshOfflineRegions()
+
+                if (catalogMayHaveChanged) {
+                    withContext(Dispatchers.IO) {
+                        refreshOfflineRegionsInternal()
+                    }
                 }
             }
         }
@@ -112,18 +149,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopForegroundSensors() {
         foregroundActive = false
         compass.stop()
-        if (!_preciseState.value.active) gnss.stop()
+
+        if (!_preciseState.value.active) {
+            gnss.stop()
+        }
     }
 
-    fun setLayer(layer: MapLayer) { _mapLayer.value = layer }
+    fun setLayer(layer: MapLayer) {
+        _mapLayer.value = layer
+    }
 
     fun styleUrl(online: Boolean): String? =
-        MapStyles.url(_mapLayer.value, app.settings, online)
+        MapStyles.url(
+            layer = _mapLayer.value,
+            settings = app.settings,
+            online = online
+        )
 
     fun highDetailMapsEnabled(): Boolean =
-        MapStyles.highDetailEnabled(_mapLayer.value, app.settings)
+        MapStyles.highDetailEnabled(
+            layer = _mapLayer.value,
+            settings = app.settings
+        )
 
-    fun setNavigationTarget(w: Waypoint?) { _navigationTarget.value = w }
+    fun setNavigationTarget(waypoint: Waypoint?) {
+        _navigationTarget.value = waypoint
+    }
 
     fun saveMapPoint(
         type: WaypointType,
@@ -146,47 +197,99 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveCurrent(type: WaypointType, name: String, note: String = "") {
-        val loc = location.value ?: return
+    fun saveCurrent(
+        type: WaypointType,
+        name: String,
+        note: String = ""
+    ) {
+        val current = location.value ?: return
+
         viewModelScope.launch(Dispatchers.IO) {
             app.database.insertWaypoint(
-                type, name, loc.latitude, loc.longitude,
-                if (loc.hasAltitude()) loc.altitude else null,
-                if (loc.hasAccuracy()) loc.accuracy else null, note
+                type = type,
+                name = name,
+                lat = current.latitude,
+                lon = current.longitude,
+                altitude =
+                    if (current.hasAltitude()) {
+                        current.altitude
+                    } else {
+                        null
+                    },
+                accuracy =
+                    if (current.hasAccuracy()) {
+                        current.accuracy
+                    } else {
+                        null
+                    },
+                note = note
             )
             refreshWaypointsInternal()
         }
     }
 
-    fun savePrecise(type: WaypointType, name: String, note: String = "") {
+    fun savePrecise(
+        type: WaypointType,
+        name: String,
+        note: String = ""
+    ) {
         if (_preciseState.value.active) return
+
         preciseJob?.cancel()
+
         val collector = PreciseFixCollector()
-        _preciseState.value = PreciseState(active = true, label = name)
+        _preciseState.value =
+            PreciseState(
+                active = true,
+                label = name
+            )
+
         gnss.start(GnssEngine.PowerMode.PRECISION)
+
         preciseJob = viewModelScope.launch {
-            gnss.rawLocation.collectLatest { loc ->
-                if (loc == null) return@collectLatest
-                val result = collector.add(loc)
+            gnss.rawLocation.collectLatest { raw ->
+                if (raw == null) return@collectLatest
+
+                val result = collector.add(raw)
                 val (count, best) = collector.progress()
-                _preciseState.value = PreciseState(true, count, best, name)
-                if (result != null) {
-                    withContext(Dispatchers.IO) {
-                        app.database.insertWaypoint(
-                            type, name, result.latitude, result.longitude,
-                            result.altitude, result.estimatedAccuracyMeters, note
-                        )
-                        refreshWaypointsInternal()
-                    }
-                    _preciseState.value = PreciseState(
-                        active = false,
-                        samples = result.sampleCount,
-                        bestAccuracy = result.estimatedAccuracyMeters,
+
+                _preciseState.value =
+                    PreciseState(
+                        active = true,
+                        samples = count,
+                        bestAccuracy = best,
                         label = name
                     )
-                    if (foregroundActive) gnss.start(GnssEngine.PowerMode.NORMAL) else gnss.stop()
-                    preciseJob?.cancel()
+
+                if (result == null) {
+                    return@collectLatest
                 }
+
+                withContext(Dispatchers.IO) {
+                    app.database.insertWaypoint(
+                        type = type,
+                        name = name,
+                        lat = result.latitude,
+                        lon = result.longitude,
+                        altitude = result.altitude,
+                        accuracy =
+                            result.estimatedAccuracyMeters,
+                        note = note
+                    )
+                    refreshWaypointsInternal()
+                }
+
+                _preciseState.value =
+                    PreciseState(
+                        active = false,
+                        samples = result.sampleCount,
+                        bestAccuracy =
+                            result.estimatedAccuracyMeters,
+                        label = name
+                    )
+
+                restoreNormalGnssMode()
+                preciseJob?.cancel()
             }
         }
     }
@@ -195,47 +298,65 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         preciseJob?.cancel()
         preciseJob = null
         _preciseState.value = PreciseState()
-        if (foregroundActive) gnss.start(GnssEngine.PowerMode.NORMAL) else gnss.stop()
+        restoreNormalGnssMode()
     }
 
     fun deleteWaypoint(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             app.database.deleteWaypoint(id)
-            if (_navigationTarget.value?.id == id) _navigationTarget.value = null
+
+            if (_navigationTarget.value?.id == id) {
+                _navigationTarget.value = null
+            }
+
             refreshWaypointsInternal()
         }
     }
 
-    fun updateCustomStyle(value: String) { app.settings.customStyleUrl = value }
-    fun customStyle(): String = app.settings.customStyleUrl
+    fun updateCustomStyle(value: String) {
+        app.settings.customStyleUrl = value
+    }
+
+    fun customStyle(): String =
+        app.settings.customStyleUrl
 
     fun downloadCurrentRegion(radiusKm: Double) {
-        val loc: Location = location.value ?: return
+        val current: Location =
+            location.value ?: return
         val layer = _mapLayer.value
-        val name = "${layer.title} ${radiusKm.toInt()}км ${java.text.SimpleDateFormat("dd.MM.yy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
-        // Keep the same detail target across the whole selected area.
-        // The ArcGIS exporter splits large areas into smaller packages instead
-        // of lowering image quality toward the edge of a 25/50/100 km region.
-        val maxZoom = when (layer) {
-            MapLayer.SATELLITE,
-            MapLayer.SATELLITE_TERRAIN -> 18.0
-            MapLayer.MAP,
-            MapLayer.RELIEF -> 17.0
-            MapLayer.CUSTOM -> 17.0
-        }
-        val minZoom = when {
-            radiusKm >= 100.0 -> 7.0
-            radiusKm >= 50.0 -> 8.0
-            radiusKm >= 25.0 -> 9.0
-            else -> 10.0
-        }
+
+        val timestamp = SimpleDateFormat(
+            "dd.MM.yy HH:mm",
+            Locale.getDefault()
+        ).format(Date())
+
+        val name =
+            "${layer.title} ${radiusKm.toInt()}км $timestamp"
+
+        val maxZoom =
+            when (layer) {
+                MapLayer.SATELLITE,
+                MapLayer.SATELLITE_TERRAIN -> 18.0
+
+                MapLayer.MAP,
+                MapLayer.RELIEF,
+                MapLayer.CUSTOM -> 17.0
+            }
+
+        val minZoom =
+            when {
+                radiusKm >= 100.0 -> 7.0
+                radiusKm >= 50.0 -> 8.0
+                radiusKm >= 25.0 -> 9.0
+                else -> 10.0
+            }
 
         OfflineMapDownloadService.start(
             context = app,
             name = name,
             layer = layer,
-            latitude = loc.latitude,
-            longitude = loc.longitude,
+            latitude = current.latitude,
+            longitude = current.longitude,
             radiusKm = radiusKm,
             minZoom = minZoom,
             maxZoom = maxZoom
@@ -243,55 +364,107 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelDownload(regionId: Long) {
-        OfflineMapDownloadService.cancel(app, regionId)
+        OfflineMapDownloadService.cancel(
+            context = app,
+            regionId = regionId
+        )
     }
 
     fun deleteDownload(regionId: Long) {
-        OfflineMapDownloadService.delete(app, regionId)
+        OfflineMapDownloadService.delete(
+            context = app,
+            regionId = regionId
+        )
     }
 
     fun refreshOfflineRegions() {
-        offline.listRegions({ _offlineRegions.value = it }, { })
-    }
-
-    fun deleteOfflineRegion(id: Long) {
-        offline.deleteRegion(id, { refreshOfflineRegions() }, { })
-    }
-
-    private fun refreshWaypoints() {
-        viewModelScope.launch(Dispatchers.IO) { refreshWaypointsInternal() }
-    }
-
-    private fun refreshWaypointsInternal() { _waypoints.value = app.database.listWaypoints() }
-
-    private fun scheduleConnectivityRefresh(immediate: Boolean = false) {
-        connectivityRefreshJob?.cancel()
-        connectivityRefreshJob = viewModelScope.launch {
-            if (!immediate) {
-                delay(CONNECTIVITY_STABILIZE_MS)
-            }
-            _online.value = hasValidatedInternet()
+        viewModelScope.launch(Dispatchers.IO) {
+            refreshOfflineRegionsInternal()
         }
     }
 
-    private fun hasValidatedInternet(): Boolean {
-        val network = connectivity.activeNetwork ?: return false
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    fun deleteOfflineRegion(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            offline.deleteRegion(
+                id = id,
+                onSuccess = {
+                    refreshOfflineRegionsInternal()
+                },
+                onError = {}
+            )
+        }
     }
 
-    companion object {
-        private const val CONNECTIVITY_STABILIZE_MS = 800L
+    private fun refreshWaypointsInternal() {
+        _waypoints.value =
+            app.database.listWaypoints()
+    }
+
+    private fun refreshOfflineRegionsInternal() {
+        offline.listRegions(
+            onSuccess = {
+                _offlineRegions.value = it
+            },
+            onError = {}
+        )
+    }
+
+    private fun restoreNormalGnssMode() {
+        if (foregroundActive) {
+            gnss.start(GnssEngine.PowerMode.NORMAL)
+        } else {
+            gnss.stop()
+        }
+    }
+
+    private fun scheduleConnectivityRefresh(
+        immediate: Boolean = false
+    ) {
+        connectivityRefreshJob?.cancel()
+
+        connectivityRefreshJob =
+            viewModelScope.launch {
+                if (!immediate) {
+                    delay(CONNECTIVITY_STABILIZE_MS)
+                }
+
+                _online.value =
+                    hasValidatedInternet()
+            }
+    }
+
+    private fun hasValidatedInternet(): Boolean {
+        val network =
+            connectivity.activeNetwork ?: return false
+        val capabilities =
+            connectivity.getNetworkCapabilities(network)
+                ?: return false
+
+        return capabilities.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_INTERNET
+        ) &&
+            capabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            )
     }
 
     override fun onCleared() {
-        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        runCatching {
+            connectivity.unregisterNetworkCallback(
+                networkCallback
+            )
+        }
+
         connectivityRefreshJob?.cancel()
         preciseJob?.cancel()
         gnss.stop()
         compass.stop()
+
         super.onCleared()
+    }
+
+    companion object {
+        private const val CONNECTIVITY_STABILIZE_MS =
+            800L
     }
 }

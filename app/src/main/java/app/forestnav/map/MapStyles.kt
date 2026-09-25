@@ -11,33 +11,50 @@ enum class MapLayer(val title: String) {
     CUSTOM("Своя карта")
 }
 
-data class ArcGisOfflineSource(
-    val id: String,
-    val url: String,
-    val role: OfflineLayerRole,
-    val opacity: Float = 1f
-)
+enum class OfflineLayerRole {
+    BASE,
+    HILLSHADE,
+    REFERENCE
+}
 
-enum class OfflineLayerRole { BASE, HILLSHADE, REFERENCE }
+enum class OfflinePackageFormat(val extension: String) {
+    RASTER("tpkx"),
+    VECTOR("vtpk")
+}
+
+data class OfflineSource(
+    val id: String,
+    val format: OfflinePackageFormat,
+    val role: OfflineLayerRole,
+    val opacity: Float = 1f,
+    val rasterUrl: String? = null,
+    val vectorBasemapStyle: BasemapStyle? = null,
+    val targetTilesPerPackage: Double = 40_000.0
+)
 
 object MapStyles {
     private const val JSON_PREFIX = "json:"
 
+    /**
+     * Built-in layers intentionally use ArcGIS basemaps end-to-end.
+     * This keeps the online and downloaded map families consistent and,
+     * critically, keeps the ordinary street map separate from relief.
+     */
     fun basemapStyle(layer: MapLayer): BasemapStyle = when (layer) {
-        MapLayer.MAP -> BasemapStyle.OpenOsmStyle
+        MapLayer.MAP -> BasemapStyle.ArcGISStreets
         MapLayer.SATELLITE -> BasemapStyle.ArcGISImageryStandard
-        MapLayer.RELIEF -> BasemapStyle.OpenOsmStyleRelief
+        MapLayer.RELIEF -> BasemapStyle.ArcGISStreetsRelief
         MapLayer.SATELLITE_TERRAIN -> BasemapStyle.ArcGISImagery
-        MapLayer.CUSTOM -> BasemapStyle.OpenOsmStyle
+        MapLayer.CUSTOM -> BasemapStyle.ArcGISStreets
     }
 
     fun description(layer: MapLayer): String = when (layer) {
         MapLayer.MAP ->
-            "Open OSM • дома, дороги, тропы, подписи и адресные номера на крупном масштабе"
+            "ArcGIS Streets • обычная карта: дороги, здания, подписи и объекты без слоя рельефа"
         MapLayer.SATELLITE ->
             "ArcGIS World Imagery • HD спутниковые и аэрофотоснимки"
         MapLayer.RELIEF ->
-            "Open OSM Relief • те же дома и подписи + теневой рельеф"
+            "ArcGIS Streets + Hillshade • обычная карта с отдельным теневым рельефом"
         MapLayer.SATELLITE_TERRAIN ->
             "ArcGIS Imagery • спутник + подписи + теневой рельеф"
         MapLayer.CUSTOM ->
@@ -65,60 +82,75 @@ object MapStyles {
     fun highDetailEnabled(layer: MapLayer, settings: SettingsStore): Boolean =
         layer != MapLayer.CUSTOM || settings.customStyleUrl.isNotBlank()
 
-    fun offlineSources(layer: MapLayer): List<ArcGisOfflineSource> = when (layer) {
-        MapLayer.MAP -> listOf(
-            ArcGisOfflineSource(
-                id = "streets",
-                url = STREET_EXPORT,
-                role = OfflineLayerRole.BASE
-            )
-        )
+    /**
+     * Offline sources are explicit. MAP is a vector streets package, so it
+     * cannot accidentally inherit the shaded relief baked into the legacy
+     * World_Street_Map raster export.
+     */
+    fun offlineSources(layer: MapLayer): List<OfflineSource> = when (layer) {
+        MapLayer.MAP -> listOf(STREETS_VECTOR)
+
         MapLayer.SATELLITE -> listOf(
-            ArcGisOfflineSource(
+            OfflineSource(
                 id = "imagery",
-                url = IMAGERY_EXPORT,
-                role = OfflineLayerRole.BASE
+                format = OfflinePackageFormat.RASTER,
+                role = OfflineLayerRole.BASE,
+                rasterUrl = IMAGERY_EXPORT,
+                targetTilesPerPackage = 40_000.0
             )
         )
+
         MapLayer.RELIEF -> listOf(
-            ArcGisOfflineSource(
-                id = "streets",
-                url = STREET_EXPORT,
-                role = OfflineLayerRole.BASE
-            ),
-            ArcGisOfflineSource(
+            STREETS_VECTOR,
+            OfflineSource(
                 id = "hillshade",
-                url = HILLSHADE_EXPORT,
+                format = OfflinePackageFormat.RASTER,
                 role = OfflineLayerRole.HILLSHADE,
-                opacity = 0.22f
+                opacity = 0.22f,
+                rasterUrl = HILLSHADE_EXPORT,
+                targetTilesPerPackage = 40_000.0
             )
         )
+
         MapLayer.SATELLITE_TERRAIN -> listOf(
-            ArcGisOfflineSource(
+            OfflineSource(
                 id = "imagery",
-                url = IMAGERY_EXPORT,
-                role = OfflineLayerRole.BASE
+                format = OfflinePackageFormat.RASTER,
+                role = OfflineLayerRole.BASE,
+                rasterUrl = IMAGERY_EXPORT,
+                targetTilesPerPackage = 40_000.0
             ),
-            ArcGisOfflineSource(
+            OfflineSource(
                 id = "hillshade",
-                url = HILLSHADE_EXPORT,
+                format = OfflinePackageFormat.RASTER,
                 role = OfflineLayerRole.HILLSHADE,
-                opacity = 0.22f
+                opacity = 0.22f,
+                rasterUrl = HILLSHADE_EXPORT,
+                targetTilesPerPackage = 40_000.0
             ),
-            ArcGisOfflineSource(
+            OfflineSource(
                 id = "reference",
-                url = REFERENCE_EXPORT,
-                role = OfflineLayerRole.REFERENCE
+                format = OfflinePackageFormat.RASTER,
+                role = OfflineLayerRole.REFERENCE,
+                rasterUrl = REFERENCE_EXPORT,
+                targetTilesPerPackage = 40_000.0
             )
         )
+
         MapLayer.CUSTOM -> emptyList()
     }
 
     const val HILLSHADE_ONLINE =
         "https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer"
 
-    private const val STREET_EXPORT =
-        "https://tiledbasemaps.arcgis.com/arcgis/rest/services/World_Street_Map/MapServer"
+    private val STREETS_VECTOR = OfflineSource(
+        id = "streets",
+        format = OfflinePackageFormat.VECTOR,
+        role = OfflineLayerRole.BASE,
+        vectorBasemapStyle = BasemapStyle.ArcGISStreets,
+        targetTilesPerPackage = 24_000.0
+    )
+
     private const val IMAGERY_EXPORT =
         "https://tiledbasemaps.arcgis.com/arcgis/rest/services/World_Imagery/MapServer"
     private const val HILLSHADE_EXPORT =
