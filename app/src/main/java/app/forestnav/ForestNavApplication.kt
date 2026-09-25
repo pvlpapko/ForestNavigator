@@ -34,7 +34,7 @@ class ForestNavApplication : Application() {
             .retryOnConnectionFailure(true)
             .build()
 
-        HttpRequestUtil.setOkHttpClient(mapHttpClient)
+        HttpRequestImpl.setOkHttpClient(mapHttpClient)
 
         database = ForestDatabase(this)
         settings = SettingsStore(this)
