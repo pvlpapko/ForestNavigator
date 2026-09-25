@@ -324,11 +324,7 @@ private fun applyStyle(
         }
     }
 
-    if (MapStyles.isJsonStyle(url)) {
-        map.setStyle(Style.Builder().fromJson(MapStyles.jsonPayload(url)), onLoaded)
-    } else {
-        map.setStyle(url, onLoaded)
-    }
+    map.setStyle(url, onLoaded)
 }
 
 @SuppressLint("MissingPermission")

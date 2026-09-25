@@ -186,6 +186,10 @@ class OfflineMapManager(context: Context) {
                         onSuccess(offlineRegion)
                     }
 
+                    override fun onRegionNotFound() {
+                        onError("Офлайн-область не найдена.")
+                    }
+
                     override fun onError(error: String) {
                         onError(error)
                     }
