@@ -1,44 +1,39 @@
-# ForestNavigator architecture — 1.6.1
+# ForestNavigator architecture — 1.7.0
 
 ## Map rendering
 
-The built-in map stack is MapLibre-only. ArcGIS Maps SDK is no longer a runtime dependency.
+Built-in rendering uses MapLibre.
 
-- `MapLayer.MAP` → ArcGIS Static Basemap Tiles `open/osm-style`.
-- `MapLayer.SATELLITE` → ArcGIS Static Basemap Tiles `open/hybrid/detail`.
-- The app constructs a minimal local MapLibre raster style, so rendering does not depend on MapLibre parsing Esri's remote vector style JSON.
-- Both online and offline rendering use the same 512×512 raster tile URLs.
-- Relief and satellite+relief modes were removed.
-- The MapLibre location component receives the app's stabilized GNSS location and uses compass tracking.
-- A manual map gesture releases camera follow; recenter restores tracking.
+- MAP: ArcGIS Static Basemap Tiles `open/osm-style`.
+- SATELLITE: World Imagery raster base + ArcGIS Static Basemap Tiles `open/hybrid/detail` overlay.
+- The app builds local style JSON itself; it does not depend on MapLibre parsing the remote Esri basemap style.
+- Manual pan disables follow mode; «Я здесь» restores compass tracking.
+- Initial camera zoom is tuned to roughly a 200 m reference scale on the target phone class.
 
-## Offline maps
+## Offline storage
 
-Offline downloads use MapLibre `OfflineManager` and `OfflineTilePyramidRegionDefinition`.
+MapLibre OfflineManager is not used.
 
-- The default 6000-tile ceiling is raised to 5,000,000 resources; this is a storage-safety ceiling, not a bandwidth throttle.
-- Automatic DB packing is disabled while downloading and a pack is requested after completion.
-- The offline service stores region metadata with schema 7.
-- Old ArcGIS file stores and job preferences are deleted separately from user data.
-- Before the first schema-6 download, old MapLibre offline regions are removed.
-- Progress comes from `OfflineRegionStatus`: completed resources, required resources and completed bytes.
-- Pause/resume maps directly to `OfflineRegion.STATE_INACTIVE/STATE_ACTIVE`.
-- The foreground service restores active region IDs after process recreation.
+Each region lives under `files/offline_maps_v8/<regionId>` with:
+- `region.properties`;
+- one directory per tile source;
+- `z/x/y.png` tile files.
 
-## Network throughput
+Region states: ACTIVE, PAUSED, COMPLETE, ERROR.
 
-MapLibre's HTTP layer uses a dedicated OkHttp client for direct static-tile requests:
-- max requests: 64;
-- max requests per host: 32;
-- retry on connection failure enabled;
-- no application bandwidth throttle.
+Pause/resume/delete are ordinary coroutine/filesystem operations. There is no native offline-region database and therefore no native region delete/recreate race.
 
-This removes the previous server-side ArcGIS export workflow and its package-generation bottleneck. Provider-side throttling and physical network throughput still apply.
+## Download engine
 
-## Positioning and user data
+- Foreground data-sync service.
+- 32 workers per region.
+- OkHttp dispatcher: 64 total requests, 32 per host.
+- bounded tile task channel;
+- retries for transient failures and 429/5xx responses;
+- completed files are reused on resume;
+- 404/204 responses are recorded as skip markers;
+- no per-request fsync, avoiding unnecessary storage stalls.
 
-- GNSS uses Android `LocationManager.GPS_PROVIDER`.
-- Display position is filtered; precise waypoint capture uses raw fixes.
-- Compass uses device sensors with filtering.
-- Waypoints and tracks remain in the existing `forestnav.db` SQLite database.
-- Map-cache migration never deletes that database.
+## User data
+
+Waypoints and tracks remain in `forestnav.db` and are isolated from map cache migrations.

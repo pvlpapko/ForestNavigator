@@ -97,16 +97,23 @@ jobs:
             rm -f "$RUNNER_TEMP/$STYLE.json"
           done
 
-      - name: Validate Static Basemap tiles
+      - name: Validate map tile sources
         run: |
           set -euo pipefail
+
           for STYLE in "open/osm-style" "open/hybrid/detail"; do
             URL="https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/$STYLE/static/tile/0/0/0?token=$ARCGIS_API_KEY"
-            CODE="$(curl --silent --show-error --location --output "$RUNNER_TEMP/tile.png" --write-out "%{http_code}" "$URL")"
+            CODE="$(curl --silent --show-error --location --output "$RUNNER_TEMP/static-tile.png" --write-out "%{http_code}" "$URL")"
             test "$CODE" = "200"
-            test "$(xxd -p -l 8 "$RUNNER_TEMP/tile.png")" = "89504e470d0a1a0a"
+            test "$(xxd -p -l 8 "$RUNNER_TEMP/static-tile.png")" = "89504e470d0a1a0a"
           done
-          rm -f "$RUNNER_TEMP/tile.png"
+
+          IMAGERY_URL="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/0/0/0"
+          CODE="$(curl --silent --show-error --location --output "$RUNNER_TEMP/imagery-tile" --write-out "%{http_code}" "$IMAGERY_URL")"
+          test "$CODE" = "200"
+          test "$(wc -c < "$RUNNER_TEMP/imagery-tile")" -gt 500
+
+          rm -f "$RUNNER_TEMP/static-tile.png" "$RUNNER_TEMP/imagery-tile"
 
       - name: Build signed updateable APK
         if: ${{ env.FORESTNAV_KEYSTORE_B64 != '' }}

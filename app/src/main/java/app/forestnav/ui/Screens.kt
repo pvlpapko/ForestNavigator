@@ -798,8 +798,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "Карта Open OSM Style и спутник Open Hybrid скачиваются напрямую в офлайн-базу MapLibre. " +
-                    "Ограничение MapLibre на 6000 тайлов снято; загрузка использует расширенный пул сетевых запросов."
+                    "Тайлы скачиваются напрямую в отдельную папку области без MapLibre OfflineManager. " +
+                    "До 32 загрузок идут параллельно; пауза, продолжение и удаление не используют нативную offline-базу."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -819,8 +819,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             if (radius >= 50.0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Большая HD-область может занимать много места и скачиваться долго. " +
-                        "Качество не снижается к краям: приложение автоматически делит область на части.",
+                    "Большая HD-область может содержать сотни тысяч тайлов и занимать много места. " +
+                        "Качество не снижается к краям; скорость зависит от сети, телефона и серверов провайдера.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -946,7 +946,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                                                     Text("Пауза")
                                                 }
                                             }
-                                            if (p.cancelled && !p.active) {
+                                            if ((p.cancelled || p.needsRetry) && !p.active) {
                                                 TextButton(onClick = { vm.resumeDownload(id) }) {
                                                     Icon(Icons.Default.PlayArrow, null)
                                                     Spacer(Modifier.width(6.dp))
@@ -1025,9 +1025,9 @@ private fun SettingsScreen(vm: AppViewModel) {
 
         Text("Загрузка карт", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Офлайн-карты скачиваются напрямую ресурсами стиля. " +
-                "Встроенный лимит MapLibre на 6000 тайлов снят, а сетевой пул расширен. " +
-                "Фактическая скорость дальше зависит только от сети, устройства и сервера поставщика."
+            "Офлайн-карты скачиваются прямыми HTTP-запросами без MapLibre OfflineManager. " +
+                "Одна область использует до 32 параллельных загрузок, общий сетевой пул — до 64 запросов. " +
+                "Собственного ограничения скорости у приложения нет."
         )
 
         HorizontalDivider()

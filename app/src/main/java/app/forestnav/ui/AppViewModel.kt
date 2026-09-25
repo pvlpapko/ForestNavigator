@@ -118,8 +118,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             offline.cleanupLegacyFiles()
             refreshWaypointsInternal()
+            refreshOfflineRegionsInternal()
         }
-        refreshOfflineRegionsInternal()
+        OfflineMapDownloadService.restore(app)
 
         viewModelScope.launch {
             downloads.collectLatest { states ->

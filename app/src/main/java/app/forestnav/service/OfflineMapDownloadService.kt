@@ -10,20 +10,35 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import app.forestnav.MainActivity
 import app.forestnav.R
 import app.forestnav.map.MapLayer
+import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineMapManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.maplibre.android.offline.OfflineRegion
-import org.maplibre.android.offline.OfflineRegionError
-import org.maplibre.android.offline.OfflineRegionStatus
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 object OfflineMapDownloadState {
     private val lock = Any()
@@ -46,44 +61,51 @@ object OfflineMapDownloadState {
     }
 }
 
+/**
+ * Direct tile downloader.
+ *
+ * This intentionally does not use MapLibre OfflineManager. The native offline
+ * region database was the source of repeat crashes after pause/delete/restart
+ * on some devices. Tiles are downloaded with OkHttp into an isolated directory
+ * per region and MapLibre reads those files directly when the phone is offline.
+ */
 class OfflineMapDownloadService : Service() {
 
     private lateinit var manager: OfflineMapManager
 
-    private val observedRegions =
-        ConcurrentHashMap<Long, OfflineRegion>()
-    private val regionMeta =
-        ConcurrentHashMap<Long, OfflineMapManager.RegionMeta>()
+    private val scope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val running =
+        ConcurrentHashMap<Long, Job>()
+
+    private val deleting =
+        ConcurrentHashMap.newKeySet<Long>()
+
     private val lastPublishAt =
         ConcurrentHashMap<Long, Long>()
 
-    private val pendingUntilDatabaseReady =
-        mutableListOf<() -> Unit>()
+    private val httpClient by lazy {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = MAX_HTTP_REQUESTS
+            maxRequestsPerHost = MAX_HTTP_REQUESTS_PER_HOST
+        }
 
-    private var databaseReady = false
+        OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
+            .writeTimeout(45, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
     private var foregroundStarted = false
 
     override fun onCreate() {
         super.onCreate()
         manager = OfflineMapManager(applicationContext)
         createChannel()
-
-        manager.prepareCleanDatabase(
-            onReady = {
-                databaseReady = true
-                val pending = pendingUntilDatabaseReady.toList()
-                pendingUntilDatabaseReady.clear()
-                pending.forEach { it() }
-                restoreActiveDownloads()
-            },
-            onError = {
-                databaseReady = true
-                val pending = pendingUntilDatabaseReady.toList()
-                pendingUntilDatabaseReady.clear()
-                pending.forEach { it() }
-                restoreActiveDownloads()
-            }
-        )
     }
 
     override fun onStartCommand(
@@ -93,350 +115,499 @@ class OfflineMapDownloadService : Service() {
     ): Int {
         when (intent?.action) {
             ACTION_START -> {
-                ensureForeground()
-                val spec = jobFromIntent(intent)
-                whenDatabaseReady { createDownload(spec) }
+                val spec = specFromIntent(intent)
+                val meta = manager.createRegion(
+                    name = spec.name,
+                    layer = spec.layer,
+                    latitude = spec.latitude,
+                    longitude = spec.longitude,
+                    radiusKm = spec.radiusKm,
+                    minZoom = spec.minZoom,
+                    maxZoom = spec.maxZoom
+                )
+                launchDownload(meta)
             }
 
             ACTION_PAUSE -> {
                 val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
                 if (id > 0L) {
-                    whenDatabaseReady { pauseRegion(id) }
+                    pauseRegion(id)
                 } else {
-                    whenDatabaseReady { pauseAll() }
+                    pauseAll()
                 }
             }
 
             ACTION_RESUME -> {
                 val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
                 if (id > 0L) {
-                    ensureForeground()
-                    whenDatabaseReady { resumeRegion(id) }
+                    manager.loadMeta(id)?.let(::launchDownload)
                 }
             }
 
             ACTION_DELETE -> {
                 val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
                 if (id > 0L) {
-                    whenDatabaseReady { deleteRegion(id) }
+                    deleteRegion(id)
                 }
             }
 
-            null -> {
-                whenDatabaseReady {
-                    restoreActiveDownloads()
-                    stopIfIdle()
-                }
+            ACTION_RESTORE, null -> {
+                restoreState()
             }
         }
 
         return START_STICKY
     }
 
-    private fun createDownload(spec: JobSpec) {
-        manager.createRegion(
-            name = spec.name,
-            layer = spec.layer,
-            latitude = spec.latitude,
-            longitude = spec.longitude,
-            radiusKm = spec.radiusKm,
-            minZoom = spec.minZoom,
-            maxZoom = spec.maxZoom,
-            onCreated = { region, meta ->
-                regionMeta[region.id] = meta
-                markActive(region.id, true)
-                observeAndStart(region, meta)
-            },
-            onError = { error ->
-                notifyTerminal(
-                    id = ERROR_NOTIFICATION_ID,
-                    title = "Не удалось начать загрузку",
-                    text = error
+    private fun restoreState() {
+        val metas = manager.activeOrPausedMetas()
+
+        metas.forEach { meta ->
+            val total = manager.totalTiles(meta)
+            val (completed, bytes) = manager.completedStats(meta)
+
+            OfflineMapDownloadState.publish(
+                OfflineMapManager.DownloadProgress(
+                    regionId = meta.id,
+                    name = meta.name,
+                    layerTitle = meta.layer.title,
+                    completedResources = completed,
+                    requiredResources = total,
+                    bytes = bytes,
+                    missingResources =
+                        (total - completed).coerceAtLeast(0L),
+                    currentPackageProgress =
+                        percent(completed, total),
+                    active = meta.status ==
+                        OfflineMapManager.RegionStatus.ACTIVE,
+                    cancelled = meta.status ==
+                        OfflineMapManager.RegionStatus.PAUSED,
+                    needsRetry = meta.status ==
+                        OfflineMapManager.RegionStatus.ERROR
                 )
+            )
+
+            if (meta.status == OfflineMapManager.RegionStatus.ACTIVE) {
+                launchDownload(meta)
+            }
+        }
+
+        stopIfIdle()
+    }
+
+    private fun launchDownload(
+        originalMeta: OfflineMapManager.RegionMeta
+    ) {
+        if (running.containsKey(originalMeta.id)) return
+
+        val meta = manager.updateStatus(
+            originalMeta.id,
+            OfflineMapManager.RegionStatus.ACTIVE
+        ) ?: return
+
+        deleting.remove(meta.id)
+        ensureForeground()
+
+        val job = scope.launch {
+            val total = manager.totalTiles(meta)
+            val completed = AtomicLong(0L)
+            val bytes = AtomicLong(0L)
+            val skipped = AtomicLong(0L)
+
+            try {
+                val (alreadyDone, existingBytes) =
+                    manager.completedStats(meta)
+
+                completed.set(alreadyDone)
+                bytes.set(existingBytes)
+
+                publish(
+                    meta = meta,
+                    completed = completed.get(),
+                    total = total,
+                    bytes = bytes.get(),
+                    skipped = skipped.get(),
+                    force = true
+                )
+
+                coroutineScope {
+                    val queue =
+                        Channel<OfflineMapManager.TileTask>(
+                            capacity = TILE_QUEUE_CAPACITY
+                        )
+
+                    val producer = launch {
+                        try {
+                            manager.tileTasks(meta).forEach { task ->
+                                queue.send(task)
+                            }
+                        } finally {
+                            queue.close()
+                        }
+                    }
+
+                    val workers = List(DOWNLOAD_WORKERS_PER_REGION) {
+                        launch {
+                            for (task in queue) {
+                                if (
+                                    task.file.isFile &&
+                                    task.file.length() > MIN_TILE_BYTES
+                                ) {
+                                    continue
+                                }
+
+                                val skipMarker =
+                                    File(
+                                        task.file.parentFile,
+                                        task.file.name + SKIP_SUFFIX
+                                    )
+
+                                if (skipMarker.isFile) {
+                                    skipped.incrementAndGet()
+                                    publish(
+                                        meta = meta,
+                                        completed = completed.get(),
+                                        total = total,
+                                        bytes = bytes.get(),
+                                        skipped = skipped.get()
+                                    )
+                                    continue
+                                }
+
+                                when (
+                                    val result =
+                                        downloadTile(task)
+                                ) {
+                                    is TileResult.Success -> {
+                                        completed.incrementAndGet()
+                                        bytes.addAndGet(result.bytes)
+                                    }
+
+                                    TileResult.Skip -> {
+                                        task.file.parentFile?.mkdirs()
+                                        skipMarker.writeText("skip")
+                                        skipped.incrementAndGet()
+                                    }
+                                }
+
+                                publish(
+                                    meta = meta,
+                                    completed = completed.get(),
+                                    total = total,
+                                    bytes = bytes.get(),
+                                    skipped = skipped.get()
+                                )
+                            }
+                        }
+                    }
+
+                    producer.join()
+                    workers.joinAll()
+                }
+
+                manager.markComplete(meta.id)
+
+                publish(
+                    meta = meta,
+                    completed = completed.get(),
+                    total = total,
+                    bytes = bytes.get(),
+                    skipped = skipped.get(),
+                    complete = true,
+                    active = false,
+                    force = true
+                )
+
+                notifyTerminal(
+                    terminalNotificationId(meta.id),
+                    "Офлайн-карта готова",
+                    meta.name
+                )
+            } catch (_: CancellationException) {
+                if (!deleting.contains(meta.id)) {
+                    manager.updateStatus(
+                        meta.id,
+                        OfflineMapManager.RegionStatus.PAUSED
+                    )
+
+                    publish(
+                        meta = meta,
+                        completed = completed.get(),
+                        total = total,
+                        bytes = bytes.get(),
+                        skipped = skipped.get(),
+                        active = false,
+                        cancelled = true,
+                        force = true
+                    )
+                }
+            } catch (t: Throwable) {
+                if (!deleting.contains(meta.id)) {
+                    manager.updateStatus(
+                        meta.id,
+                        OfflineMapManager.RegionStatus.ERROR
+                    )
+
+                    publish(
+                        meta = meta,
+                        completed = completed.get(),
+                        total = total,
+                        bytes = bytes.get(),
+                        skipped = skipped.get(),
+                        active = false,
+                        needsRetry = true,
+                        error =
+                            t.message ?: "Ошибка загрузки тайлов",
+                        force = true
+                    )
+                }
+            } finally {
+                running.remove(meta.id)
+                lastPublishAt.remove(meta.id)
+                updateAggregateNotification()
                 stopIfIdle()
             }
-        )
+        }
+
+        running[meta.id] = job
     }
 
-    private fun observeAndStart(
-        region: OfflineRegion,
-        meta: OfflineMapManager.RegionMeta
-    ) {
-        observedRegions[region.id] = region
-        regionMeta[region.id] = meta
-        region.setDeliverInactiveMessages(true)
-        region.setObserver(
-            object : OfflineRegion.OfflineRegionObserver {
-                override fun onStatusChanged(status: OfflineRegionStatus) {
-                    publishStatus(
-                        region = region,
-                        meta = meta,
-                        status = status
-                    )
+    private sealed interface TileResult {
+        data class Success(val bytes: Long) : TileResult
+        data object Skip : TileResult
+    }
 
-                    if (status.isComplete) {
-                        region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                        markActive(region.id, false)
-                        region.setObserver(null)
-                        observedRegions.remove(region.id)
-                        lastPublishAt.remove(region.id)
+    private fun downloadTile(
+        task: OfflineMapManager.TileTask
+    ): TileResult {
+        val url = MapStyles.tileUrl(
+            source = task.source,
+            z = task.z,
+            x = task.x,
+            y = task.y
+        )
 
-                        notifyTerminal(
-                            id = terminalNotificationId(region.id),
-                            title = "Офлайн-карта готова",
-                            text = meta.name
-                        )
+        var lastError: Throwable? = null
 
-                        manager.packDatabase()
-                        stopIfIdle()
+        repeat(TILE_RETRIES) { attempt ->
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "ForestNavigator/1.7")
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    when {
+                        response.code == 404 ||
+                            response.code == 204 -> {
+                            return TileResult.Skip
+                        }
+
+                        response.code == 401 ||
+                            response.code == 403 -> {
+                            throw IllegalStateException(
+                                "Провайдер отклонил доступ к карте: HTTP ${response.code}"
+                            )
+                        }
+
+                        response.isSuccessful -> {
+                            val body = response.body
+                                ?: throw IllegalStateException(
+                                    "Провайдер вернул пустой ответ"
+                                )
+
+                            val data = body.bytes()
+                            if (data.size <= MIN_TILE_BYTES) {
+                                return TileResult.Skip
+                            }
+
+                            task.file.parentFile?.mkdirs()
+
+                            val temp = File(
+                                task.file.parentFile,
+                                task.file.name + ".part"
+                            )
+
+                            FileOutputStream(temp).use { output ->
+                                output.write(data)
+                            }
+
+                            if (task.file.exists()) {
+                                task.file.delete()
+                            }
+
+                            check(temp.renameTo(task.file)) {
+                                "Не удалось сохранить тайл"
+                            }
+
+                            return TileResult.Success(
+                                data.size.toLong()
+                            )
+                        }
+
+                        response.code == 429 ||
+                            response.code >= 500 -> {
+                            lastError = IllegalStateException(
+                                "HTTP ${response.code}"
+                            )
+                        }
+
+                        else -> {
+                            lastError = IllegalStateException(
+                                "HTTP ${response.code}"
+                            )
+                        }
                     }
                 }
-
-                override fun onError(error: OfflineRegionError) {
-                    val previous =
-                        OfflineMapDownloadState.progress.value[region.id]
-
-                    OfflineMapDownloadState.publish(
-                        OfflineMapManager.DownloadProgress(
-                            regionId = region.id,
-                            name = meta.name,
-                            layerTitle = meta.layer.title,
-                            completedResources =
-                                previous?.completedResources ?: 0L,
-                            requiredResources =
-                                previous?.requiredResources ?: 0L,
-                            bytes = previous?.bytes ?: 0L,
-                            currentPackageProgress =
-                                previous?.currentPackageProgress ?: 0,
-                            missingResources =
-                                previous?.missingResources ?: 0L,
-                            needsRetry = true,
-                            active = true,
-                            error =
-                                "Временная ошибка загрузки: ${error.message}"
-                        )
-                    )
-                    updateAggregateNotification()
-                }
-
-                override fun mapboxTileCountLimitExceeded(limit: Long) {
-                    manager.configureFastDownloads()
-                    updateAggregateNotification()
-                }
+            } catch (t: Throwable) {
+                lastError = t
             }
-        )
 
-        OfflineMapDownloadState.publish(
-            OfflineMapManager.DownloadProgress(
-                regionId = region.id,
-                name = meta.name,
-                layerTitle = meta.layer.title,
-                active = true
-            )
+            if (attempt + 1 < TILE_RETRIES) {
+                Thread.sleep(
+                    RETRY_DELAYS_MS[
+                        attempt.coerceAtMost(
+                            RETRY_DELAYS_MS.lastIndex
+                        )
+                    ]
+                )
+            }
+        }
+
+        throw IllegalStateException(
+            "Не удалось скачать тайл: " +
+                (lastError?.message ?: "неизвестная ошибка"),
+            lastError
         )
-        updateAggregateNotification()
-        region.setDownloadState(OfflineRegion.STATE_ACTIVE)
     }
 
-    private fun publishStatus(
-        region: OfflineRegion,
+    private fun pauseRegion(id: Long) {
+        scope.launch {
+            running.remove(id)?.cancelAndJoin()
+
+            manager.updateStatus(
+                id,
+                OfflineMapManager.RegionStatus.PAUSED
+            )?.let { meta ->
+                val total = manager.totalTiles(meta)
+                val (completed, bytes) =
+                    manager.completedStats(meta)
+
+                publish(
+                    meta = meta,
+                    completed = completed,
+                    total = total,
+                    bytes = bytes,
+                    active = false,
+                    cancelled = true,
+                    force = true
+                )
+            }
+
+            stopIfIdle()
+        }
+    }
+
+    private fun pauseAll() {
+        scope.launch {
+            running.keys.toList().forEach { id ->
+                running.remove(id)?.cancelAndJoin()
+                manager.updateStatus(
+                    id,
+                    OfflineMapManager.RegionStatus.PAUSED
+                )
+            }
+            stopIfIdle()
+        }
+    }
+
+    private fun deleteRegion(id: Long) {
+        scope.launch {
+            deleting += id
+
+            running.remove(id)?.cancelAndJoin()
+
+            manager.deleteRegion(
+                id = id,
+                onSuccess = {
+                    OfflineMapDownloadState.remove(id)
+                    getSystemService(
+                        NotificationManager::class.java
+                    ).cancel(
+                        terminalNotificationId(id)
+                    )
+                },
+                onError = {}
+            )
+
+            deleting.remove(id)
+            lastPublishAt.remove(id)
+            stopIfIdle()
+        }
+    }
+
+    private fun publish(
         meta: OfflineMapManager.RegionMeta,
-        status: OfflineRegionStatus,
+        completed: Long,
+        total: Long,
+        bytes: Long,
+        skipped: Long = 0L,
+        complete: Boolean = false,
+        active: Boolean = true,
+        cancelled: Boolean = false,
+        needsRetry: Boolean = false,
+        error: String? = null,
         force: Boolean = false
     ) {
-        val now = SystemClock.elapsedRealtime()
-        val last = lastPublishAt[region.id] ?: 0L
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = lastPublishAt[meta.id] ?: 0L
 
         if (!force &&
-            !status.isComplete &&
             now - last < PROGRESS_PUBLISH_INTERVAL_MS
         ) {
             return
         }
 
-        lastPublishAt[region.id] = now
+        lastPublishAt[meta.id] = now
 
-        val required = status.requiredResourceCount
-        val completed = status.completedResourceCount
-        val percent = if (required > 0L) {
-            ((completed * 100L) / required)
-                .toInt()
-                .coerceIn(0, 100)
-        } else {
-            0
-        }
-
-        val active =
-            !status.isComplete &&
-                status.downloadState == OfflineRegion.STATE_ACTIVE
+        val done = completed + skipped
+        val missing =
+            (total - done).coerceAtLeast(0L)
 
         OfflineMapDownloadState.publish(
             OfflineMapManager.DownloadProgress(
-                regionId = region.id,
+                regionId = meta.id,
                 name = meta.name,
                 layerTitle = meta.layer.title,
                 completedResources = completed,
-                requiredResources = required,
-                bytes = status.completedResourceSize,
-                missingResources =
-                    (required - completed).coerceAtLeast(0L),
-                currentPackageProgress = percent,
-                complete = status.isComplete,
+                requiredResources = total,
+                bytes = bytes,
+                skippedResources = skipped,
+                missingResources = missing,
+                currentPackageProgress =
+                    percent(done, total),
+                needsRetry = needsRetry,
+                complete = complete,
                 active = active,
-                cancelled =
-                    !status.isComplete &&
-                        status.downloadState ==
-                        OfflineRegion.STATE_INACTIVE
+                cancelled = cancelled,
+                error = error
             )
         )
 
         updateAggregateNotification()
     }
 
-    private fun restoreActiveDownloads() {
-        val ids = activeIds()
-        if (ids.isEmpty()) {
-            stopIfIdle()
-            return
-        }
-
-        ensureForeground()
-
-        ids.forEach { id ->
-            manager.getRegion(
-                regionId = id,
-                onSuccess = { region ->
-                    val meta = manager.decodeMeta(region)
-                    if (meta == null ||
-                        meta.schema != OfflineMapManager.MAP_SCHEMA
-                    ) {
-                        markActive(id, false)
-                        stopIfIdle()
-                    } else if (!observedRegions.containsKey(id)) {
-                        observeAndStart(region, meta)
-                    }
-                },
-                onError = {
-                    markActive(id, false)
-                    stopIfIdle()
-                }
-            )
-        }
-    }
-
-    private fun pauseRegion(id: Long) {
-        manager.getRegion(
-            regionId = id,
-            onSuccess = { region ->
-                region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                markActive(id, false)
-
-                region.getStatus(
-                    object : OfflineRegion.OfflineRegionStatusCallback {
-                        override fun onStatus(status: OfflineRegionStatus?) {
-                            val meta =
-                                manager.decodeMeta(region)
-                                    ?: regionMeta[id]
-                                    ?: return
-                            status?.let {
-                                publishStatus(
-                                    region,
-                                    meta,
-                                    it,
-                                    force = true
-                                )
-                            }
-                            region.setObserver(null)
-                            observedRegions.remove(id)
-                            stopIfIdle()
-                        }
-
-                        override fun onError(error: String?) {
-                            region.setObserver(null)
-                            observedRegions.remove(id)
-                            stopIfIdle()
-                        }
-                    }
-                )
-            },
-            onError = {
-                markActive(id, false)
-                stopIfIdle()
-            }
-        )
-    }
-
-    private fun resumeRegion(id: Long) {
-        manager.getRegion(
-            regionId = id,
-            onSuccess = { region ->
-                val meta = manager.decodeMeta(region)
-                if (meta == null ||
-                    meta.schema != OfflineMapManager.MAP_SCHEMA
-                ) {
-                    notifyTerminal(
-                        terminalNotificationId(id),
-                        "Не удалось продолжить",
-                        "Эта область создана старой версией приложения."
-                    )
-                    stopIfIdle()
-                } else {
-                    ensureForeground()
-                    markActive(id, true)
-                    observeAndStart(region, meta)
-                }
-            },
-            onError = {
-                notifyTerminal(
-                    terminalNotificationId(id),
-                    "Не удалось продолжить",
-                    it
-                )
-                stopIfIdle()
-            }
-        )
-    }
-
-    private fun deleteRegion(id: Long) {
-        observedRegions.remove(id)?.let { region ->
-            region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-            region.setObserver(null)
-        }
-
-        markActive(id, false)
-
-        manager.deleteRegion(
-            id = id,
-            onSuccess = {
-                regionMeta.remove(id)
-                lastPublishAt.remove(id)
-                OfflineMapDownloadState.remove(id)
-                getSystemService(NotificationManager::class.java)
-                    .cancel(terminalNotificationId(id))
-                stopIfIdle()
-            },
-            onError = {
-                stopIfIdle()
-            }
-        )
-    }
-
-    private fun pauseAll() {
-        val ids = activeIds().toList()
-        if (ids.isEmpty()) {
-            stopIfIdle()
-            return
-        }
-        ids.forEach(::pauseRegion)
-    }
-
-    private fun whenDatabaseReady(action: () -> Unit) {
-        if (databaseReady) {
-            action()
+    private fun percent(
+        done: Long,
+        total: Long
+    ): Int =
+        if (total <= 0L) {
+            0
         } else {
-            pendingUntilDatabaseReady += action
+            ((done * 100L) / total)
+                .toInt()
+                .coerceIn(0, 100)
         }
-    }
 
     private fun ensureForeground() {
         if (!foregroundStarted) {
@@ -458,25 +629,15 @@ class OfflineMapDownloadService : Service() {
         }
     }
 
-    private fun stopIfIdle() {
-        if (activeIds().isNotEmpty()) return
-        if (pendingUntilDatabaseReady.isNotEmpty()) return
-
-        if (foregroundStarted) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            foregroundStarted = false
-        }
-
-        stopSelf()
-    }
-
     private fun updateAggregateNotification() {
         if (!foregroundStarted) return
-        getSystemService(NotificationManager::class.java)
-            .notify(
-                NOTIFICATION_ID,
-                buildNotification()
-            )
+
+        getSystemService(
+            NotificationManager::class.java
+        ).notify(
+            NOTIFICATION_ID,
+            buildNotification()
+        )
     }
 
     private fun buildNotification(): Notification {
@@ -492,8 +653,10 @@ class OfflineMapDownloadService : Service() {
         val pauseAllIntent = PendingIntent.getService(
             this,
             2102,
-            Intent(this, OfflineMapDownloadService::class.java)
-                .setAction(ACTION_PAUSE),
+            Intent(
+                this,
+                OfflineMapDownloadService::class.java
+            ).setAction(ACTION_PAUSE),
             PendingIntent.FLAG_IMMUTABLE or
                 PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -502,24 +665,35 @@ class OfflineMapDownloadService : Service() {
             OfflineMapDownloadState.progress.value.values
                 .filter { it.active }
 
-        val completed = active.sumOf { it.completedResources }
-        val required = active.sumOf { it.requiredResources }
-        val bytes = active.sumOf { it.bytes }
+        val completed =
+            active.sumOf {
+                it.completedResources +
+                    it.skippedResources
+            }
+
+        val required =
+            active.sumOf { it.requiredResources }
+
+        val bytes =
+            active.sumOf { it.bytes }
 
         val text = when {
             active.isEmpty() ->
-                "Подготовка прямой загрузки карты…"
+                "Подготовка загрузки…"
 
             required > 0L ->
                 "${active.size} загруз. • " +
-                    "$completed/$required ресурсов • " +
+                    "$completed/$required тайлов • " +
                     "${bytes / 1_048_576L} МБ"
 
             else ->
-                "${active.size} загруз. • получение списка ресурсов…"
+                "${active.size} загруз. • подготовка…"
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(
+            this,
+            CHANNEL_ID
+        )
             .setSmallIcon(R.drawable.ic_app)
             .setContentTitle("Офлайн-карты")
             .setContentText(text)
@@ -531,15 +705,16 @@ class OfflineMapDownloadService : Service() {
                 "Пауза всех",
                 pauseAllIntent
             )
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setCategory(
+                NotificationCompat.CATEGORY_PROGRESS
+            )
             .apply {
                 if (required > 0L) {
-                    val progress =
-                        ((completed * 100L) /
-                            required.coerceAtLeast(1L))
-                            .toInt()
-                            .coerceIn(0, 100)
-                    setProgress(100, progress, false)
+                    setProgress(
+                        100,
+                        percent(completed, required),
+                        false
+                    )
                 } else {
                     setProgress(0, 0, true)
                 }
@@ -547,83 +722,80 @@ class OfflineMapDownloadService : Service() {
             .build()
     }
 
+    private fun stopIfIdle() {
+        if (running.isNotEmpty()) return
+
+        if (foregroundStarted) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+        }
+
+        stopSelf()
+    }
+
     private fun notifyTerminal(
         id: Int,
         title: String,
         text: String
     ) {
-        getSystemService(NotificationManager::class.java)
-            .notify(
-                id,
-                NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_app)
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setAutoCancel(true)
-                    .build()
+        getSystemService(
+            NotificationManager::class.java
+        ).notify(
+            id,
+            NotificationCompat.Builder(
+                this,
+                CHANNEL_ID
             )
+                .setSmallIcon(R.drawable.ic_app)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .build()
+        )
     }
 
     private fun createChannel() {
-        getSystemService(NotificationManager::class.java)
-            .createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Скачивание офлайн-карт",
-                    NotificationManager.IMPORTANCE_LOW
-                )
+        getSystemService(
+            NotificationManager::class.java
+        ).createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "Скачивание офлайн-карт",
+                NotificationManager.IMPORTANCE_LOW
             )
+        )
     }
 
-    private fun markActive(id: Long, active: Boolean) {
-        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val ids = prefs
-            .getStringSet(KEY_ACTIVE_IDS, emptySet())
-            .orEmpty()
-            .toMutableSet()
-
-        if (active) {
-            ids += id.toString()
-        } else {
-            ids -= id.toString()
-        }
-
-        prefs.edit()
-            .putStringSet(KEY_ACTIVE_IDS, ids)
-            .apply()
-    }
-
-    private fun activeIds(): Set<Long> =
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-            .getStringSet(KEY_ACTIVE_IDS, emptySet())
-            .orEmpty()
-            .mapNotNull { it.toLongOrNull() }
-            .toSet()
-
-    private fun jobFromIntent(intent: Intent): JobSpec =
+    private fun specFromIntent(
+        intent: Intent
+    ): JobSpec =
         JobSpec(
             name = intent.getStringExtra(EXTRA_NAME)
                 .orEmpty()
                 .ifBlank { "Офлайн-карта" },
             layer = runCatching {
                 MapLayer.valueOf(
-                    intent.getStringExtra(EXTRA_LAYER).orEmpty()
+                    intent.getStringExtra(EXTRA_LAYER)
+                        .orEmpty()
                 )
             }.getOrDefault(MapLayer.MAP),
-            latitude = intent.getDoubleExtra(EXTRA_LAT, 0.0),
-            longitude = intent.getDoubleExtra(EXTRA_LON, 0.0),
-            radiusKm = intent.getDoubleExtra(EXTRA_RADIUS, 5.0),
-            minZoom = intent.getDoubleExtra(EXTRA_MIN_ZOOM, 10.0),
-            maxZoom = intent.getDoubleExtra(EXTRA_MAX_ZOOM, 18.0)
+            latitude =
+                intent.getDoubleExtra(EXTRA_LAT, 0.0),
+            longitude =
+                intent.getDoubleExtra(EXTRA_LON, 0.0),
+            radiusKm =
+                intent.getDoubleExtra(EXTRA_RADIUS, 5.0),
+            minZoom =
+                intent.getIntExtra(EXTRA_MIN_ZOOM, 10),
+            maxZoom =
+                intent.getIntExtra(EXTRA_MAX_ZOOM, 18)
         )
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? =
+        null
 
     override fun onDestroy() {
-        observedRegions.values.forEach { region ->
-            region.setObserver(null)
-        }
-        observedRegions.clear()
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -633,26 +805,30 @@ class OfflineMapDownloadService : Service() {
         val latitude: Double,
         val longitude: Double,
         val radiusKm: Double,
-        val minZoom: Double,
-        val maxZoom: Double
+        val minZoom: Int,
+        val maxZoom: Int
     )
 
     companion object {
-        private const val CHANNEL_ID = "offline_map_download_v6"
+        private const val CHANNEL_ID =
+            "direct_tile_download_v8"
+
         private const val NOTIFICATION_ID = 2101
-        private const val ERROR_NOTIFICATION_ID = 2199
-        private const val PREFS = "maplibre_offline_jobs_v6"
-        private const val KEY_ACTIVE_IDS = "active_ids"
-        private const val PROGRESS_PUBLISH_INTERVAL_MS = 250L
 
         private const val ACTION_START =
-            "app.forestnav.action.DOWNLOAD_OFFLINE_MAP"
+            "app.forestnav.action.DOWNLOAD_DIRECT_TILES"
+
         private const val ACTION_PAUSE =
-            "app.forestnav.action.PAUSE_OFFLINE_MAP"
+            "app.forestnav.action.PAUSE_DIRECT_TILES"
+
         private const val ACTION_RESUME =
-            "app.forestnav.action.RESUME_OFFLINE_MAP"
+            "app.forestnav.action.RESUME_DIRECT_TILES"
+
         private const val ACTION_DELETE =
-            "app.forestnav.action.DELETE_OFFLINE_MAP"
+            "app.forestnav.action.DELETE_DIRECT_TILES"
+
+        private const val ACTION_RESTORE =
+            "app.forestnav.action.RESTORE_DIRECT_TILES"
 
         private const val EXTRA_NAME = "name"
         private const val EXTRA_LAYER = "layer"
@@ -662,6 +838,23 @@ class OfflineMapDownloadService : Service() {
         private const val EXTRA_MIN_ZOOM = "min_zoom"
         private const val EXTRA_MAX_ZOOM = "max_zoom"
         private const val EXTRA_REGION_ID = "region_id"
+
+        private const val DOWNLOAD_WORKERS_PER_REGION = 32
+        private const val TILE_QUEUE_CAPACITY = 256
+        private const val MAX_HTTP_REQUESTS = 64
+        private const val MAX_HTTP_REQUESTS_PER_HOST = 32
+        private const val TILE_RETRIES = 4
+        private const val MIN_TILE_BYTES = 128L
+        private const val SKIP_SUFFIX = ".skip"
+        private const val PROGRESS_PUBLISH_INTERVAL_MS = 300L
+
+        private val RETRY_DELAYS_MS =
+            longArrayOf(
+                700L,
+                1_500L,
+                3_000L,
+                6_000L
+            )
 
         fun start(
             context: Context,
@@ -685,8 +878,14 @@ class OfflineMapDownloadService : Service() {
                     .putExtra(EXTRA_LAT, latitude)
                     .putExtra(EXTRA_LON, longitude)
                     .putExtra(EXTRA_RADIUS, radiusKm)
-                    .putExtra(EXTRA_MIN_ZOOM, minZoom)
-                    .putExtra(EXTRA_MAX_ZOOM, maxZoom)
+                    .putExtra(
+                        EXTRA_MIN_ZOOM,
+                        minZoom.toInt()
+                    )
+                    .putExtra(
+                        EXTRA_MAX_ZOOM,
+                        maxZoom.toInt()
+                    )
             )
         }
 
@@ -700,7 +899,10 @@ class OfflineMapDownloadService : Service() {
             ).setAction(ACTION_PAUSE)
 
             if (regionId != null) {
-                intent.putExtra(EXTRA_REGION_ID, regionId)
+                intent.putExtra(
+                    EXTRA_REGION_ID,
+                    regionId
+                )
             }
 
             context.startService(intent)
@@ -717,7 +919,10 @@ class OfflineMapDownloadService : Service() {
                     OfflineMapDownloadService::class.java
                 )
                     .setAction(ACTION_RESUME)
-                    .putExtra(EXTRA_REGION_ID, regionId)
+                    .putExtra(
+                        EXTRA_REGION_ID,
+                        regionId
+                    )
             )
         }
 
@@ -731,14 +936,31 @@ class OfflineMapDownloadService : Service() {
                     OfflineMapDownloadService::class.java
                 )
                     .setAction(ACTION_DELETE)
-                    .putExtra(EXTRA_REGION_ID, regionId)
+                    .putExtra(
+                        EXTRA_REGION_ID,
+                        regionId
+                    )
+            )
+        }
+
+        fun restore(context: Context) {
+            context.startService(
+                Intent(
+                    context,
+                    OfflineMapDownloadService::class.java
+                ).setAction(ACTION_RESTORE)
             )
         }
     }
 
-    private fun terminalNotificationId(regionId: Long): Int =
+    private fun terminalNotificationId(
+        regionId: Long
+    ): Int =
         3000 +
-            (regionId xor (regionId ushr 32))
+            (
+                regionId xor
+                    (regionId ushr 32)
+                )
                 .toInt()
                 .and(0x3fff)
 }

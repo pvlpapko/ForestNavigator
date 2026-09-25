@@ -11,8 +11,8 @@ android {
         applicationId = "app.forestnav"
         minSdk = 28
         targetSdk = 36
-        versionCode = 55
-        versionName = "1.6.1"
+        versionCode = 56
+        versionName = "1.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

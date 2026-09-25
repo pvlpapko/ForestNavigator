@@ -22,6 +22,7 @@ import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.map.MapLayer
 import app.forestnav.map.MapStyles
+import app.forestnav.map.OfflineMapManager
 import org.maplibre.android.annotations.Icon
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.Marker
@@ -88,10 +89,19 @@ fun ForestMapView(
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
-    val styleKey = remember(layer) { MapStyles.styleKey(layer) }
-    val styleJson = remember(layer) { MapStyles.styleJson(layer) }
-    @Suppress("UNUSED_VARIABLE")
-    val connectivityState = online
+    val offlineManager = remember { OfflineMapManager(context) }
+    val styleSpec = if (online) {
+        MapStyles.onlineStyle(layer)
+            ?: MapStyles.emptyStyle(layer)
+    } else {
+        offlineManager.selectionFor(
+            layer = layer,
+            latitude = location.latitude,
+            longitude = location.longitude
+        )?.style ?: MapStyles.emptyStyle(layer)
+    }
+    val styleKey = styleSpec.key
+    val styleJson = styleSpec.json
 
     DisposableEffect(mapView, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -502,4 +512,4 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
 
-private const val INITIAL_ZOOM = 18.5
+private const val INITIAL_ZOOM = 18.35

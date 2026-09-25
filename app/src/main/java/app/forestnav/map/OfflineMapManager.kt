@@ -1,15 +1,17 @@
 package app.forestnav.map
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import org.json.JSONObject
-import org.maplibre.android.geometry.LatLngBounds
-import org.maplibre.android.offline.OfflineManager
-import org.maplibre.android.offline.OfflineRegion
-import org.maplibre.android.offline.OfflineTilePyramidRegionDefinition
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.Properties
+import kotlin.math.PI
+import kotlin.math.atan
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.sinh
+import kotlin.math.tan
 
 class OfflineMapManager(context: Context) {
 
@@ -31,245 +33,45 @@ class OfflineMapManager(context: Context) {
         val error: String? = null
     )
 
+    enum class RegionStatus {
+        ACTIVE,
+        PAUSED,
+        COMPLETE,
+        ERROR
+    }
+
     data class RegionMeta(
-        val schema: Int,
+        val id: Long,
         val name: String,
         val layer: MapLayer,
         val centerLat: Double,
         val centerLon: Double,
         val radiusKm: Double,
+        val minZoom: Int,
+        val maxZoom: Int,
+        val west: Double,
+        val south: Double,
+        val east: Double,
+        val north: Double,
+        val status: RegionStatus,
         val createdAt: Long
     )
 
-    private val appContext = context.applicationContext
-    private val main = Handler(Looper.getMainLooper())
-    private val offlineManager = OfflineManager.getInstance(appContext)
-    private val migrationPrefs = appContext.getSharedPreferences(
-        MIGRATION_PREFS,
-        Context.MODE_PRIVATE
+    data class TileTask(
+        val source: TileSourceSpec,
+        val z: Int,
+        val x: Int,
+        val y: Int,
+        val file: File
     )
 
-    init {
-        runOnMain {
-            configureFastDownloads()
-        }
-    }
+    data class OfflineSelection(
+        val meta: RegionMeta,
+        val style: MapStyleSpec
+    )
 
-    fun configureFastDownloads() {
-        // This is a resource-count safety ceiling, not a bandwidth throttle.
-        // It is intentionally far above MapLibre's 6,000-tile default while
-        // avoiding Long.MAX_VALUE in JNI/native code.
-        offlineManager.setOfflineMapboxTileCountLimit(5_000_000L)
-        offlineManager.runPackDatabaseAutomatically(false)
-    }
-
-    /**
-     * Before the first v6 download, remove any MapLibre regions created by
-     * older app generations. This is intentionally scoped to map cache only:
-     * saved waypoints and tracks live in a separate SQLite database.
-     */
-    fun prepareCleanDatabase(
-        onReady: () -> Unit,
-        onError: (String) -> Unit
-    ) {
-        runOnMain {
-            configureFastDownloads()
-
-            if (migrationPrefs.getInt(KEY_MAP_SCHEMA, 0) >= MAP_SCHEMA) {
-                onReady()
-                return@runOnMain
-            }
-
-            offlineManager.listOfflineRegions(
-                object : OfflineManager.ListOfflineRegionsCallback {
-                    override fun onList(offlineRegions: Array<OfflineRegion>?) {
-                        val regions = offlineRegions.orEmpty()
-                        if (regions.isEmpty()) {
-                            finishMigration(onReady)
-                            return
-                        }
-
-                        var remaining = regions.size
-                        var failed = false
-
-                        regions.forEach { region ->
-                            region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                            region.setObserver(null)
-                            region.delete(
-                                object : OfflineRegion.OfflineRegionDeleteCallback {
-                                    override fun onDelete() {
-                                        remaining -= 1
-                                        if (remaining == 0 && !failed) {
-                                            finishMigration(onReady)
-                                        }
-                                    }
-
-                                    override fun onError(error: String) {
-                                        if (!failed) {
-                                            failed = true
-                                            onError(error)
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                    }
-
-                    override fun onError(error: String) {
-                        onError(error)
-                    }
-                }
-            )
-        }
-    }
-
-    fun createRegion(
-        name: String,
-        layer: MapLayer,
-        latitude: Double,
-        longitude: Double,
-        radiusKm: Double,
-        minZoom: Double,
-        maxZoom: Double,
-        onCreated: (OfflineRegion, RegionMeta) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        val styleUrl = runCatching {
-            MapStyles.offlineStyleUri(appContext, layer)
-        }.getOrNull()
-
-        if (styleUrl == null) {
-            onError("Не удалось подготовить локальный стиль Open Basemap.")
-            return
-        }
-
-        runOnMain {
-            val bounds = boundsFor(latitude, longitude, radiusKm)
-            val definition = OfflineTilePyramidRegionDefinition(
-                styleUrl,
-                bounds,
-                minZoom,
-                maxZoom,
-                1.0f,
-                false
-            )
-            val meta = RegionMeta(
-                schema = MAP_SCHEMA,
-                name = name,
-                layer = layer,
-                centerLat = latitude,
-                centerLon = longitude,
-                radiusKm = radiusKm,
-                createdAt = System.currentTimeMillis()
-            )
-
-            offlineManager.createOfflineRegion(
-                definition,
-                encodeMeta(meta),
-                object : OfflineManager.CreateOfflineRegionCallback {
-                    override fun onCreate(offlineRegion: OfflineRegion) {
-                        onCreated(offlineRegion, meta)
-                    }
-
-                    override fun onError(error: String) {
-                        onError(error)
-                    }
-                }
-            )
-        }
-    }
-
-    fun getRegion(
-        regionId: Long,
-        onSuccess: (OfflineRegion) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        runOnMain {
-            offlineManager.getOfflineRegion(
-                regionId,
-                object : OfflineManager.GetOfflineRegionCallback {
-                    override fun onRegion(offlineRegion: OfflineRegion) {
-                        onSuccess(offlineRegion)
-                    }
-
-                    override fun onRegionNotFound() {
-                        onError("Офлайн-область не найдена.")
-                    }
-
-                    override fun onError(error: String) {
-                        onError(error)
-                    }
-                }
-            )
-        }
-    }
-
-    fun listRegions(
-        onSuccess: (List<Pair<Long, String>>) -> Unit,
-        onError: (Throwable) -> Unit
-    ) {
-        runOnMain {
-            offlineManager.listOfflineRegions(
-                object : OfflineManager.ListOfflineRegionsCallback {
-                    override fun onList(offlineRegions: Array<OfflineRegion>?) {
-                        val values = offlineRegions
-                            .orEmpty()
-                            .mapNotNull { region ->
-                                val meta = decodeMeta(region.metadata)
-                                    ?: return@mapNotNull null
-                                if (meta.schema != MAP_SCHEMA) {
-                                    return@mapNotNull null
-                                }
-                                region.id to meta.name
-                            }
-                            .sortedByDescending { it.first }
-                        onSuccess(values)
-                    }
-
-                    override fun onError(error: String) {
-                        onError(IllegalStateException(error))
-                    }
-                }
-            )
-        }
-    }
-
-    fun deleteRegion(
-        id: Long,
-        onSuccess: () -> Unit,
-        onError: (Throwable) -> Unit
-    ) {
-        getRegion(
-            regionId = id,
-            onSuccess = { region ->
-                region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                region.setObserver(null)
-                region.delete(
-                    object : OfflineRegion.OfflineRegionDeleteCallback {
-                        override fun onDelete() {
-                            onSuccess()
-                        }
-
-                        override fun onError(error: String) {
-                            onError(IllegalStateException(error))
-                        }
-                    }
-                )
-            },
-            onError = {
-                onError(IllegalStateException(it))
-            }
-        )
-    }
-
-    fun packDatabase() {
-        runOnMain {
-            offlineManager.packDatabase(null)
-        }
-    }
-
-    fun decodeMeta(region: OfflineRegion): RegionMeta? =
-        decodeMeta(region.metadata)
+    private val appContext = context.applicationContext
+    private val root = File(appContext.filesDir, ROOT_DIR).apply { mkdirs() }
 
     fun cleanupLegacyFiles() {
         LEGACY_ROOT_DIRS.forEach { directory ->
@@ -284,91 +86,340 @@ class OfflineMapManager(context: Context) {
         }
     }
 
-    private fun finishMigration(onReady: () -> Unit) {
-        offlineManager.clearAmbientCache(null)
-        migrationPrefs.edit()
-            .putInt(KEY_MAP_SCHEMA, MAP_SCHEMA)
-            .apply()
-        onReady()
+    fun createRegion(
+        name: String,
+        layer: MapLayer,
+        latitude: Double,
+        longitude: Double,
+        radiusKm: Double,
+        minZoom: Int,
+        maxZoom: Int
+    ): RegionMeta {
+        val id = nextRegionId()
+        val bounds = boundsFor(latitude, longitude, radiusKm)
+
+        val meta = RegionMeta(
+            id = id,
+            name = name,
+            layer = layer,
+            centerLat = latitude,
+            centerLon = longitude,
+            radiusKm = radiusKm,
+            minZoom = minZoom,
+            maxZoom = maxZoom,
+            west = bounds[0],
+            south = bounds[1],
+            east = bounds[2],
+            north = bounds[3],
+            status = RegionStatus.ACTIVE,
+            createdAt = System.currentTimeMillis()
+        )
+
+        regionDir(id).mkdirs()
+        saveMeta(meta)
+        return meta
+    }
+
+    fun loadMeta(id: Long): RegionMeta? =
+        readMeta(File(regionDir(id), META_FILE))
+
+    fun updateStatus(
+        id: Long,
+        status: RegionStatus
+    ): RegionMeta? {
+        val current = loadMeta(id) ?: return null
+        val updated = current.copy(status = status)
+        saveMeta(updated)
+        return updated
+    }
+
+    fun deleteRegion(
+        id: Long,
+        onSuccess: () -> Unit,
+        onError: (Throwable) -> Unit
+    ) {
+        runCatching {
+            regionDir(id).deleteRecursively()
+        }.onSuccess {
+            onSuccess()
+        }.onFailure(onError)
+    }
+
+    fun listRegions(
+        onSuccess: (List<Pair<Long, String>>) -> Unit,
+        onError: (Throwable) -> Unit
+    ) {
+        runCatching {
+            allMetas()
+                .filter { it.status == RegionStatus.COMPLETE }
+                .sortedByDescending { it.createdAt }
+                .map { it.id to it.name }
+        }.onSuccess(onSuccess).onFailure(onError)
+    }
+
+    fun activeOrPausedMetas(): List<RegionMeta> =
+        allMetas()
+            .filter {
+                it.status == RegionStatus.ACTIVE ||
+                    it.status == RegionStatus.PAUSED ||
+                    it.status == RegionStatus.ERROR
+            }
+            .sortedByDescending { it.createdAt }
+
+    fun totalTiles(meta: RegionMeta): Long {
+        val sources = MapStyles.tileSources(meta.layer)
+        var total = 0L
+
+        for (z in meta.minZoom..meta.maxZoom) {
+            val range = tileRange(meta, z)
+            val width = range[1] - range[0] + 1
+            val height = range[3] - range[2] + 1
+            total += width.toLong() * height.toLong() * sources.size.toLong()
+        }
+
+        return total
+    }
+
+    fun tileTasks(meta: RegionMeta): Sequence<TileTask> = sequence {
+        val dir = regionDir(meta.id)
+
+        for (source in MapStyles.tileSources(meta.layer)) {
+            for (z in meta.minZoom..meta.maxZoom) {
+                val range = tileRange(meta, z)
+
+                for (x in range[0]..range[1]) {
+                    for (y in range[2]..range[3]) {
+                        yield(
+                            TileTask(
+                                source = source,
+                                z = z,
+                                x = x,
+                                y = y,
+                                file = File(
+                                    dir,
+                                    "${source.id}/$z/$x/$y.png"
+                                )
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun completedStats(meta: RegionMeta): Pair<Long, Long> {
+        var count = 0L
+        var bytes = 0L
+
+        tileTasks(meta).forEach { task ->
+            if (task.file.isFile && task.file.length() > MIN_TILE_BYTES) {
+                count += 1L
+                bytes += task.file.length()
+            }
+        }
+
+        return count to bytes
+    }
+
+    fun markComplete(id: Long): RegionMeta? =
+        updateStatus(id, RegionStatus.COMPLETE)
+
+    fun selectionFor(
+        layer: MapLayer,
+        latitude: Double,
+        longitude: Double
+    ): OfflineSelection? {
+        val meta = allMetas()
+            .asSequence()
+            .filter { it.status == RegionStatus.COMPLETE }
+            .filter { it.layer == layer }
+            .filter {
+                latitude in it.south..it.north &&
+                    longitude in it.west..it.east
+            }
+            .maxByOrNull { it.createdAt }
+            ?: return null
+
+        val style = MapStyles.offlineStyle(
+            layer = meta.layer,
+            regionId = meta.id,
+            regionDirectory = regionDir(meta.id)
+        ) ?: return null
+
+        return OfflineSelection(meta, style)
+    }
+
+    fun regionDirectory(id: Long): File =
+        regionDir(id)
+
+    private fun saveMeta(meta: RegionMeta) {
+        val props = Properties().apply {
+            setProperty("schema", SCHEMA.toString())
+            setProperty("id", meta.id.toString())
+            setProperty("name", meta.name)
+            setProperty("layer", meta.layer.name)
+            setProperty("centerLat", meta.centerLat.toString())
+            setProperty("centerLon", meta.centerLon.toString())
+            setProperty("radiusKm", meta.radiusKm.toString())
+            setProperty("minZoom", meta.minZoom.toString())
+            setProperty("maxZoom", meta.maxZoom.toString())
+            setProperty("west", meta.west.toString())
+            setProperty("south", meta.south.toString())
+            setProperty("east", meta.east.toString())
+            setProperty("north", meta.north.toString())
+            setProperty("status", meta.status.name)
+            setProperty("createdAt", meta.createdAt.toString())
+        }
+
+        val target = File(regionDir(meta.id), META_FILE)
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, "${target.name}.tmp")
+
+        FileOutputStream(temp).use {
+            props.store(it, "ForestNavigator direct offline tiles")
+            it.fd.sync()
+        }
+
+        if (target.exists()) target.delete()
+        check(temp.renameTo(target)) {
+            "Не удалось сохранить метаданные офлайн-карты"
+        }
+    }
+
+    private fun readMeta(file: File): RegionMeta? =
+        runCatching {
+            val props = Properties()
+            FileInputStream(file).use { props.load(it) }
+
+            if (props.getProperty("schema")?.toIntOrNull() != SCHEMA) {
+                return@runCatching null
+            }
+
+            RegionMeta(
+                id = props.getProperty("id").toLong(),
+                name = props.getProperty("name"),
+                layer = MapLayer.valueOf(props.getProperty("layer")),
+                centerLat = props.getProperty("centerLat").toDouble(),
+                centerLon = props.getProperty("centerLon").toDouble(),
+                radiusKm = props.getProperty("radiusKm").toDouble(),
+                minZoom = props.getProperty("minZoom").toInt(),
+                maxZoom = props.getProperty("maxZoom").toInt(),
+                west = props.getProperty("west").toDouble(),
+                south = props.getProperty("south").toDouble(),
+                east = props.getProperty("east").toDouble(),
+                north = props.getProperty("north").toDouble(),
+                status = RegionStatus.valueOf(props.getProperty("status")),
+                createdAt = props.getProperty("createdAt").toLong()
+            )
+        }.getOrNull()
+
+    private fun allMetas(): List<RegionMeta> =
+        root.listFiles()
+            .orEmpty()
+            .filter { it.isDirectory }
+            .mapNotNull { readMeta(File(it, META_FILE)) }
+
+    private fun regionDir(id: Long): File =
+        File(root, id.toString())
+
+    private fun nextRegionId(): Long {
+        var id = System.currentTimeMillis()
+        while (regionDir(id).exists()) {
+            id += 1L
+        }
+        return id
+    }
+
+    private fun tileRange(
+        meta: RegionMeta,
+        z: Int
+    ): IntArray {
+        val n = 1 shl z
+
+        val xMin = lonToTileX(meta.west, z)
+            .coerceIn(0, n - 1)
+        val xMax = lonToTileX(meta.east, z)
+            .coerceIn(0, n - 1)
+        val yMin = latToTileY(meta.north, z)
+            .coerceIn(0, n - 1)
+        val yMax = latToTileY(meta.south, z)
+            .coerceIn(0, n - 1)
+
+        return intArrayOf(
+            minOf(xMin, xMax),
+            maxOf(xMin, xMax),
+            minOf(yMin, yMax),
+            maxOf(yMin, yMax)
+        )
+    }
+
+    private fun lonToTileX(
+        longitude: Double,
+        z: Int
+    ): Int {
+        val n = 1 shl z
+        return floor(
+            (longitude + 180.0) / 360.0 * n
+        ).toInt()
+    }
+
+    private fun latToTileY(
+        latitude: Double,
+        z: Int
+    ): Int {
+        val lat = latitude.coerceIn(-85.05112878, 85.05112878)
+        val latRad = Math.toRadians(lat)
+        val n = 1 shl z
+
+        return floor(
+            (
+                1.0 -
+                    ln(
+                        tan(latRad) +
+                            1.0 / cos(latRad)
+                    ) / PI
+                ) / 2.0 * n
+        ).toInt()
     }
 
     private fun boundsFor(
         latitude: Double,
         longitude: Double,
         radiusKm: Double
-    ): LatLngBounds {
+    ): DoubleArray {
         val latDelta = radiusKm / KM_PER_DEGREE_LATITUDE
         val lonDelta = radiusKm / (
             KM_PER_DEGREE_LATITUDE *
                 cos(Math.toRadians(latitude)).coerceAtLeast(0.2)
             )
 
-        val north = (latitude + latDelta).coerceIn(-85.0, 85.0)
-        val south = (latitude - latDelta).coerceIn(-85.0, 85.0)
-        val east = (longitude + lonDelta).coerceIn(-180.0, 180.0)
-        val west = (longitude - lonDelta).coerceIn(-180.0, 180.0)
-
-        return LatLngBounds.from(
-            north,
-            east,
-            south,
-            west
+        return doubleArrayOf(
+            (longitude - lonDelta).coerceIn(-180.0, 180.0),
+            (latitude - latDelta).coerceIn(-85.0, 85.0),
+            (longitude + lonDelta).coerceIn(-180.0, 180.0),
+            (latitude + latDelta).coerceIn(-85.0, 85.0)
         )
     }
 
-    private fun encodeMeta(meta: RegionMeta): ByteArray =
-        JSONObject()
-            .put("schema", meta.schema)
-            .put("name", meta.name)
-            .put("layer", meta.layer.name)
-            .put("centerLat", meta.centerLat)
-            .put("centerLon", meta.centerLon)
-            .put("radiusKm", meta.radiusKm)
-            .put("createdAt", meta.createdAt)
-            .toString()
-            .toByteArray(Charsets.UTF_8)
-
-    private fun decodeMeta(bytes: ByteArray): RegionMeta? =
-        runCatching {
-            val json = JSONObject(bytes.toString(Charsets.UTF_8))
-            RegionMeta(
-                schema = json.optInt("schema", 0),
-                name = json.optString("name", "Офлайн-карта"),
-                layer = MapLayer.valueOf(
-                    json.optString("layer", MapLayer.MAP.name)
-                ),
-                centerLat = json.optDouble("centerLat", 0.0),
-                centerLon = json.optDouble("centerLon", 0.0),
-                radiusKm = json.optDouble("radiusKm", 0.0),
-                createdAt = json.optLong("createdAt", 0L)
-            )
-        }.getOrNull()
-
-    private fun runOnMain(block: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            block()
-        } else {
-            main.post(block)
-        }
-    }
-
     companion object {
-        const val MAP_SCHEMA = 7
-
-        private const val MIGRATION_PREFS = "offline_map_schema"
-        private const val KEY_MAP_SCHEMA = "schema"
+        private const val SCHEMA = 8
+        private const val ROOT_DIR = "offline_maps_v8"
+        private const val META_FILE = "region.properties"
+        private const val MIN_TILE_BYTES = 128L
         private const val KM_PER_DEGREE_LATITUDE = 111.32
 
         private val LEGACY_ROOT_DIRS = arrayOf(
             "arcgis_offline_v2",
             "offline_maps_v3",
-            "offline_maps_v4"
+            "offline_maps_v4",
+            "map_styles_v7"
         )
 
         private val LEGACY_DOWNLOAD_PREFS = arrayOf(
             "arcgis_offline_jobs",
             "arcgis_offline_jobs_v3",
-            "arcgis_offline_jobs_v4"
+            "arcgis_offline_jobs_v4",
+            "maplibre_offline_jobs_v6"
         )
     }
 }
