@@ -839,14 +839,14 @@ class OfflineMapDownloadService : Service() {
         private const val EXTRA_MAX_ZOOM = "max_zoom"
         private const val EXTRA_REGION_ID = "region_id"
 
-        private const val DOWNLOAD_WORKERS_PER_REGION = 32
-        private const val TILE_QUEUE_CAPACITY = 256
-        private const val MAX_HTTP_REQUESTS = 64
-        private const val MAX_HTTP_REQUESTS_PER_HOST = 32
+        private const val DOWNLOAD_WORKERS_PER_REGION = 48
+        private const val TILE_QUEUE_CAPACITY = 768
+        private const val MAX_HTTP_REQUESTS = 96
+        private const val MAX_HTTP_REQUESTS_PER_HOST = 48
         private const val TILE_RETRIES = 4
         private const val MIN_TILE_BYTES = 128L
         private const val SKIP_SUFFIX = ".skip"
-        private const val PROGRESS_PUBLISH_INTERVAL_MS = 300L
+        private const val PROGRESS_PUBLISH_INTERVAL_MS = 750L
 
         private val RETRY_DELAYS_MS =
             longArrayOf(

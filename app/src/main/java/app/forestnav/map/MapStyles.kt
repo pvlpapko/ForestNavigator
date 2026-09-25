@@ -18,6 +18,7 @@ data class MapStyleSpec(
 data class TileSourceSpec(
     val id: String,
     val tileSize: Int,
+    val nativeMaxZoom: Int,
     val urlTemplate: String
 )
 
@@ -49,6 +50,7 @@ object MapStyles {
                 TileSourceSpec(
                     id = "osm",
                     tileSize = 512,
+                    nativeMaxZoom = 22,
                     urlTemplate =
                         "$STATIC_BASE/open/osm-style/static/tile/{z}/{y}/{x}?token=$encoded"
                 )
@@ -58,11 +60,13 @@ object MapStyles {
                 TileSourceSpec(
                     id = "imagery",
                     tileSize = 256,
+                    nativeMaxZoom = 18,
                     urlTemplate = WORLD_IMAGERY
                 ),
                 TileSourceSpec(
                     id = "hybrid-detail",
                     tileSize = 512,
+                    nativeMaxZoom = 22,
                     urlTemplate =
                         "$STATIC_BASE/open/hybrid/detail/static/tile/{z}/{y}/{x}?token=$encoded"
                 )
@@ -78,6 +82,7 @@ object MapStyles {
             key = "online-v8-${layer.name}",
             json = buildStyleJson(
                 layer = layer,
+                sources = sources,
                 tileTemplates = sources.associate { it.id to it.urlTemplate }
             )
         )
@@ -86,7 +91,8 @@ object MapStyles {
     fun offlineStyle(
         layer: MapLayer,
         regionId: Long,
-        regionDirectory: File
+        regionDirectory: File,
+        maxDownloadedZoom: Int
     ): MapStyleSpec? {
         val sources = tileSources(layer)
         if (sources.isEmpty()) return null
@@ -102,6 +108,14 @@ object MapStyles {
             key = "offline-v8-$regionId-${layer.name}",
             json = buildStyleJson(
                 layer = layer,
+                sources = sources.map {
+                    it.copy(
+                        nativeMaxZoom = minOf(
+                            it.nativeMaxZoom,
+                            maxDownloadedZoom
+                        )
+                    )
+                },
                 tileTemplates = templates
             )
         )
@@ -141,23 +155,22 @@ object MapStyles {
 
     private fun buildStyleJson(
         layer: MapLayer,
+        sources: List<TileSourceSpec>,
         tileTemplates: Map<String, String>
     ): String {
         val background =
             if (layer == MapLayer.SATELLITE) "#0d0f0d" else "#d8ded6"
 
-        val sourceJson = tileTemplates.entries.joinToString(",") { (id, url) ->
-            val tileSize = when (id) {
-                "imagery" -> 256
-                else -> 512
-            }
+        val sourceJson = sources.joinToString(",") { source ->
+            val url = tileTemplates[source.id]
+                ?: error("Missing tile template for ${source.id}")
             """
-            "$id": {
+            "${source.id}": {
               "type": "raster",
               "tiles": ["$url"],
-              "tileSize": $tileSize,
+              "tileSize": ${source.tileSize},
               "minzoom": 0,
-              "maxzoom": 22
+              "maxzoom": ${source.nativeMaxZoom}
             }
             """.trimIndent()
         }

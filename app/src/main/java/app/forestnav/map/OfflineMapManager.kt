@@ -6,11 +6,12 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Properties
 import kotlin.math.PI
-import kotlin.math.atan
+import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
-import kotlin.math.sinh
+import kotlin.math.sin
 import kotlin.math.tan
 
 class OfflineMapManager(context: Context) {
@@ -174,7 +175,13 @@ class OfflineMapManager(context: Context) {
             val range = tileRange(meta, z)
             val width = range[1] - range[0] + 1
             val height = range[3] - range[2] + 1
-            total += width.toLong() * height.toLong() * sources.size.toLong()
+            val activeSources = sources.count {
+                z <= it.nativeMaxZoom
+            }
+            total +=
+                width.toLong() *
+                    height.toLong() *
+                    activeSources.toLong()
         }
 
         return total
@@ -182,13 +189,20 @@ class OfflineMapManager(context: Context) {
 
     fun tileTasks(meta: RegionMeta): Sequence<TileTask> = sequence {
         val dir = regionDir(meta.id)
+        val sources = MapStyles.tileSources(meta.layer)
 
-        for (source in MapStyles.tileSources(meta.layer)) {
-            for (z in meta.minZoom..meta.maxZoom) {
-                val range = tileRange(meta, z)
+        // Interleave sources per tile. Satellite downloads can therefore use
+        // the imagery host and the Hybrid Detail host at the same time instead
+        // of finishing one complete source before starting the other.
+        for (z in meta.minZoom..meta.maxZoom) {
+            val range = tileRange(meta, z)
+            val activeSources = sources.filter {
+                z <= it.nativeMaxZoom
+            }
 
-                for (x in range[0]..range[1]) {
-                    for (y in range[2]..range[3]) {
+            for (x in range[0]..range[1]) {
+                for (y in range[2]..range[3]) {
+                    for (source in activeSources) {
                         yield(
                             TileTask(
                                 source = source,
@@ -243,7 +257,8 @@ class OfflineMapManager(context: Context) {
         val style = MapStyles.offlineStyle(
             layer = meta.layer,
             regionId = meta.id,
-            regionDirectory = regionDir(meta.id)
+            regionDirectory = regionDir(meta.id),
+            maxDownloadedZoom = meta.maxZoom
         ) ?: return null
 
         return OfflineSelection(meta, style)
@@ -387,18 +402,80 @@ class OfflineMapManager(context: Context) {
         longitude: Double,
         radiusKm: Double
     ): DoubleArray {
-        val latDelta = radiusKm / KM_PER_DEGREE_LATITUDE
-        val lonDelta = radiusKm / (
-            KM_PER_DEGREE_LATITUDE *
-                cos(Math.toRadians(latitude)).coerceAtLeast(0.2)
-            )
+        val distanceMeters = radiusKm * 1_000.0
+
+        // The selected value is a true radius from the GPS marker:
+        // 2 km => 2 km north, south, east and west => a 4 x 4 km square.
+        val north = destinationPoint(
+            latitude,
+            longitude,
+            distanceMeters,
+            0.0
+        )
+        val east = destinationPoint(
+            latitude,
+            longitude,
+            distanceMeters,
+            90.0
+        )
+        val south = destinationPoint(
+            latitude,
+            longitude,
+            distanceMeters,
+            180.0
+        )
+        val west = destinationPoint(
+            latitude,
+            longitude,
+            distanceMeters,
+            270.0
+        )
 
         return doubleArrayOf(
-            (longitude - lonDelta).coerceIn(-180.0, 180.0),
-            (latitude - latDelta).coerceIn(-85.0, 85.0),
-            (longitude + lonDelta).coerceIn(-180.0, 180.0),
-            (latitude + latDelta).coerceIn(-85.0, 85.0)
+            west.second.coerceIn(-180.0, 180.0),
+            south.first.coerceIn(-85.05112878, 85.05112878),
+            east.second.coerceIn(-180.0, 180.0),
+            north.first.coerceIn(-85.05112878, 85.05112878)
         )
+    }
+
+    private fun destinationPoint(
+        latitude: Double,
+        longitude: Double,
+        distanceMeters: Double,
+        bearingDegrees: Double
+    ): Pair<Double, Double> {
+        val angularDistance =
+            distanceMeters / EARTH_RADIUS_METERS
+        val bearing =
+            Math.toRadians(bearingDegrees)
+        val lat1 =
+            Math.toRadians(latitude)
+        val lon1 =
+            Math.toRadians(longitude)
+
+        val lat2 = asin(
+            sin(lat1) * cos(angularDistance) +
+                cos(lat1) *
+                sin(angularDistance) *
+                cos(bearing)
+        )
+
+        val lon2 = lon1 + atan2(
+            sin(bearing) *
+                sin(angularDistance) *
+                cos(lat1),
+            cos(angularDistance) -
+                sin(lat1) * sin(lat2)
+        )
+
+        val normalizedLon =
+            Math.toDegrees(lon2)
+                .let { value ->
+                    ((value + 540.0) % 360.0) - 180.0
+                }
+
+        return Math.toDegrees(lat2) to normalizedLon
     }
 
     companion object {
@@ -406,7 +483,7 @@ class OfflineMapManager(context: Context) {
         private const val ROOT_DIR = "offline_maps_v8"
         private const val META_FILE = "region.properties"
         private const val MIN_TILE_BYTES = 128L
-        private const val KM_PER_DEGREE_LATITUDE = 111.32
+        private const val EARTH_RADIUS_METERS = 6_371_008.8
 
         private val LEGACY_ROOT_DIRS = arrayOf(
             "arcgis_offline_v2",
