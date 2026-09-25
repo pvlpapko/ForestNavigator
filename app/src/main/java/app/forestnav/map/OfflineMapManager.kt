@@ -92,8 +92,16 @@ class OfflineMapManager(private val context: Context) {
             ).coerceAtLeast(1.0)
         val maxLevelTiles = (widthMeters / tileMeters).pow(2.0)
         val allLevelTiles = maxLevelTiles * 1.34
-        val splits = ceil(sqrt(allLevelTiles / SAFE_TILES_PER_EXPORT))
-            .toInt()
+        val splitsByTileBudget =
+            ceil(sqrt(allLevelTiles / SAFE_TILES_PER_EXPORT))
+                .toInt()
+        val parallelFloor =
+            if (allLevelTiles >= PARALLEL_SPLIT_THRESHOLD_TILES) {
+                MIN_PARALLEL_SPLITS_PER_AXIS
+            } else {
+                1
+            }
+        val splits = maxOf(splitsByTileBudget, parallelFloor)
             .coerceIn(1, MAX_SPLITS_PER_AXIS)
 
         val dir = partialDir(regionId)
@@ -223,7 +231,12 @@ class OfflineMapManager(private val context: Context) {
 
     companion object {
         private const val ROOT_DIR = "arcgis_offline_v2"
-        private const val SAFE_TILES_PER_EXPORT = 80_000.0
+        // ArcGIS Online allows up to 100,000 tiles per export request.
+        // A lower target leaves headroom and creates enough independent
+        // packages to keep several network/export workers busy in parallel.
+        private const val SAFE_TILES_PER_EXPORT = 45_000.0
+        private const val PARALLEL_SPLIT_THRESHOLD_TILES = 8_000.0
+        private const val MIN_PARALLEL_SPLITS_PER_AXIS = 2
         private const val MAX_SPLITS_PER_AXIS = 20
     }
 }
