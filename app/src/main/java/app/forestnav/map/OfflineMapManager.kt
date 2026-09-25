@@ -56,7 +56,10 @@ class OfflineMapManager(context: Context) {
     }
 
     fun configureFastDownloads() {
-        offlineManager.setOfflineMapboxTileCountLimit(Long.MAX_VALUE)
+        // This is a resource-count safety ceiling, not a bandwidth throttle.
+        // It is intentionally far above MapLibre's 6,000-tile default while
+        // avoiding Long.MAX_VALUE in JNI/native code.
+        offlineManager.setOfflineMapboxTileCountLimit(5_000_000L)
         offlineManager.runPackDatabaseAutomatically(false)
     }
 
@@ -131,9 +134,12 @@ class OfflineMapManager(context: Context) {
         onCreated: (OfflineRegion, RegionMeta) -> Unit,
         onError: (String) -> Unit
     ) {
-        val styleUrl = MapStyles.styleUrl(layer)
+        val styleUrl = runCatching {
+            MapStyles.offlineStyleUri(appContext, layer)
+        }.getOrNull()
+
         if (styleUrl == null) {
-            onError("Ключ доступа к Open Basemap отсутствует.")
+            onError("Не удалось подготовить локальный стиль Open Basemap.")
             return
         }
 
@@ -144,7 +150,7 @@ class OfflineMapManager(context: Context) {
                 bounds,
                 minZoom,
                 maxZoom,
-                appContext.resources.displayMetrics.density.coerceIn(1f, 2f),
+                1.0f,
                 false
             )
             val meta = RegionMeta(
@@ -347,7 +353,7 @@ class OfflineMapManager(context: Context) {
     }
 
     companion object {
-        const val MAP_SCHEMA = 6
+        const val MAP_SCHEMA = 7
 
         private const val MIGRATION_PREFS = "offline_map_schema"
         private const val KEY_MAP_SCHEMA = "schema"

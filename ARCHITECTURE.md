@@ -1,12 +1,13 @@
-# ForestNavigator architecture — 1.6.0
+# ForestNavigator architecture — 1.6.1
 
 ## Map rendering
 
 The built-in map stack is MapLibre-only. ArcGIS Maps SDK is no longer a runtime dependency.
 
-- `MapLayer.MAP` → ArcGIS Basemap Styles service `styles/open/osm-style`.
-- `MapLayer.SATELLITE` → `styles/open/hybrid`.
-- Both online and offline rendering use the same style URL, preventing mismatched map content.
+- `MapLayer.MAP` → ArcGIS Static Basemap Tiles `open/osm-style`.
+- `MapLayer.SATELLITE` → ArcGIS Static Basemap Tiles `open/hybrid/detail`.
+- The app constructs a minimal local MapLibre raster style, so rendering does not depend on MapLibre parsing Esri's remote vector style JSON.
+- Both online and offline rendering use the same 512×512 raster tile URLs.
 - Relief and satellite+relief modes were removed.
 - The MapLibre location component receives the app's stabilized GNSS location and uses compass tracking.
 - A manual map gesture releases camera follow; recenter restores tracking.
@@ -15,9 +16,9 @@ The built-in map stack is MapLibre-only. ArcGIS Maps SDK is no longer a runtime 
 
 Offline downloads use MapLibre `OfflineManager` and `OfflineTilePyramidRegionDefinition`.
 
-- The default 6000-tile ceiling is raised to `Long.MAX_VALUE`.
+- The default 6000-tile ceiling is raised to 5,000,000 resources; this is a storage-safety ceiling, not a bandwidth throttle.
 - Automatic DB packing is disabled while downloading and a pack is requested after completion.
-- The offline service stores region metadata with schema 6.
+- The offline service stores region metadata with schema 7.
 - Old ArcGIS file stores and job preferences are deleted separately from user data.
 - Before the first schema-6 download, old MapLibre offline regions are removed.
 - Progress comes from `OfflineRegionStatus`: completed resources, required resources and completed bytes.
@@ -26,7 +27,7 @@ Offline downloads use MapLibre `OfflineManager` and `OfflineTilePyramidRegionDef
 
 ## Network throughput
 
-MapLibre's HTTP layer uses a dedicated OkHttp client:
+MapLibre's HTTP layer uses a dedicated OkHttp client for direct static-tile requests:
 - max requests: 64;
 - max requests per host: 32;
 - retry on connection failure enabled;

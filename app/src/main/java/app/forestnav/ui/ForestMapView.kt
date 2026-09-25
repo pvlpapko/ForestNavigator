@@ -88,7 +88,8 @@ fun ForestMapView(
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
-    val styleUrl = remember(layer) { MapStyles.styleUrl(layer) }
+    val styleKey = remember(layer) { MapStyles.styleKey(layer) }
+    val styleJson = remember(layer) { MapStyles.styleJson(layer) }
     @Suppress("UNUSED_VARIABLE")
     val connectivityState = online
 
@@ -185,7 +186,7 @@ fun ForestMapView(
 
                     map.cameraPosition = CameraPosition.Builder()
                         .target(LatLng(location.latitude, location.longitude))
-                        .zoom(15.5)
+                        .zoom(INITIAL_ZOOM)
                         .bearing(0.0)
                         .tilt(0.0)
                         .build()
@@ -195,7 +196,8 @@ fun ForestMapView(
                         context = context,
                         map = map,
                         state = state,
-                        styleUrl = styleUrl,
+                        styleKey = styleKey,
+                        styleJson = styleJson,
                         location = location,
                         waypoints = waypoints
                     )
@@ -215,15 +217,16 @@ fun ForestMapView(
         update = {
             val map = state.map ?: return@AndroidView
 
-            if (styleUrl != null &&
-                styleUrl != state.loadedStyle &&
-                styleUrl != state.loadingStyle
+            if (styleJson != null &&
+                styleKey != state.loadedStyle &&
+                styleKey != state.loadingStyle
             ) {
                 applyStyle(
                     context = context,
                     map = map,
                     state = state,
-                    styleUrl = styleUrl,
+                    styleKey = styleKey,
+                    styleJson = styleJson,
                     location = location,
                     waypoints = waypoints
                 )
@@ -239,7 +242,7 @@ fun ForestMapView(
                 enableNativeFollow(
                     map = map,
                     location = location,
-                    minimumZoom = 17.0,
+                    minimumZoom = INITIAL_ZOOM,
                     transitionDurationMs = 550L
                 )
                 state.lastRecenterToken = recenterToken
@@ -281,16 +284,17 @@ private fun applyStyle(
     context: Context,
     map: MapLibreMap,
     state: NativeMapState,
-    styleUrl: String?,
+    styleKey: String,
+    styleJson: String?,
     location: Location,
     waypoints: List<Waypoint>
 ) {
-    val url = styleUrl ?: return
-    if (url == state.loadedStyle || url == state.loadingStyle) return
-    state.loadingStyle = url
+    val json = styleJson ?: return
+    if (styleKey == state.loadedStyle || styleKey == state.loadingStyle) return
+    state.loadingStyle = styleKey
 
     val onLoaded = Style.OnStyleLoaded { style ->
-        state.loadedStyle = url
+        state.loadedStyle = styleKey
         state.loadingStyle = null
         state.waypointMarkers = emptyList()
         state.waypointByMarkerId.clear()
@@ -310,7 +314,7 @@ private fun applyStyle(
             enableNativeFollow(
                 map = map,
                 location = location,
-                minimumZoom = 16.5,
+                minimumZoom = INITIAL_ZOOM,
                 transitionDurationMs = 650L
             )
             state.initialCameraAnimationDone = true
@@ -325,7 +329,7 @@ private fun applyStyle(
     }
 
     map.setStyle(
-        Style.Builder().fromUri(url),
+        Style.Builder().fromJson(json),
         onLoaded
     )
 }
@@ -497,3 +501,5 @@ private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
 
     return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
+
+private const val INITIAL_ZOOM = 18.5

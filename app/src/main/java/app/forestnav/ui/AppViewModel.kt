@@ -314,7 +314,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val maxZoom =
             when (layer) {
-                MapLayer.MAP -> 17.0
+                MapLayer.MAP -> 18.0
                 MapLayer.SATELLITE -> 18.0
             }
 

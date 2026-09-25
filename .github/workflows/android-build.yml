@@ -97,6 +97,17 @@ jobs:
             rm -f "$RUNNER_TEMP/$STYLE.json"
           done
 
+      - name: Validate Static Basemap tiles
+        run: |
+          set -euo pipefail
+          for STYLE in "open/osm-style" "open/hybrid/detail"; do
+            URL="https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/$STYLE/static/tile/0/0/0?token=$ARCGIS_API_KEY"
+            CODE="$(curl --silent --show-error --location --output "$RUNNER_TEMP/tile.png" --write-out "%{http_code}" "$URL")"
+            test "$CODE" = "200"
+            test "$(xxd -p -l 8 "$RUNNER_TEMP/tile.png")" = "89504e470d0a1a0a"
+          done
+          rm -f "$RUNNER_TEMP/tile.png"
+
       - name: Build signed updateable APK
         if: ${{ env.FORESTNAV_KEYSTORE_B64 != '' }}
         env:
@@ -126,4 +137,4 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           cp "$APK" "$RUNNER_TEMP/ForestNavigator-1.6.0.apk"
-          gh release create "v1.6.0"             "$RUNNER_TEMP/ForestNavigator-1.6.0.apk#ForestNavigator-1.6.0.apk"             --target "$GITHUB_SHA"             --title "ForestNavigator 1.6.0"             --notes "Open OSM Style + Open Hybrid, direct MapLibre offline downloads, relief modes removed."
+          gh release create "v1.6.0"             "$RUNNER_TEMP/ForestNavigator-1.6.0.apk#ForestNavigator-1.6.0.apk"             --target "$GITHUB_SHA"             --title "ForestNavigator 1.6.0"             --notes "Open OSM Style + Open Hybrid static tiles, direct MapLibre offline downloads, relief modes removed."
