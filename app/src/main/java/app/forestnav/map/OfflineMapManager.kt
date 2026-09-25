@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 /**
  * Single owner of the offline-map filesystem.
  *
- * Version 3 deliberately ignores the former arcgis_offline_v2 layout. A region
+ * Version 4 deliberately ignores all earlier offline-map layouts. A region
  * is visible to the renderer only after a complete manifest is atomically
  * published. Partial downloads can therefore never be mixed with finished
  * maps, and packages from different map modes are never guessed from filenames
@@ -253,7 +253,7 @@ class OfflineMapManager(private val context: Context) {
 
     /**
      * Publishes a region atomically. The renderer only reads final directories
-     * with a schema-3 manifest, never partial folders.
+     * with a schema-4 manifest, never partial folders.
      */
     fun finalizeRegion(regionId: Long): File {
         val partial = partialDir(regionId, create = false)
@@ -364,11 +364,15 @@ class OfflineMapManager(private val context: Context) {
      * legacy relief/streets packages over the new clean store.
      */
     fun cleanupLegacyStorage() {
-        File(appContext.filesDir, LEGACY_ROOT_DIR).deleteRecursively()
-        appContext.getSharedPreferences(
-            LEGACY_DOWNLOAD_PREFS,
-            Context.MODE_PRIVATE
-        ).edit().clear().apply()
+        LEGACY_ROOT_DIRS.forEach { directory ->
+            File(appContext.filesDir, directory).deleteRecursively()
+        }
+        LEGACY_DOWNLOAD_PREFS.forEach { preferences ->
+            appContext.getSharedPreferences(
+                preferences,
+                Context.MODE_PRIVATE
+            ).edit().clear().apply()
+        }
     }
 
     private fun catalog(): List<RegionRecord> {
@@ -533,10 +537,16 @@ class OfflineMapManager(private val context: Context) {
         }.getOrNull()
 
     companion object {
-        private const val STORE_SCHEMA = 3
-        private const val ROOT_DIR = "offline_maps_v3"
-        private const val LEGACY_ROOT_DIR = "arcgis_offline_v2"
-        private const val LEGACY_DOWNLOAD_PREFS = "arcgis_offline_jobs"
+        private const val STORE_SCHEMA = 4
+        private const val ROOT_DIR = "offline_maps_v4"
+        private val LEGACY_ROOT_DIRS = arrayOf(
+            "arcgis_offline_v2",
+            "offline_maps_v3"
+        )
+        private val LEGACY_DOWNLOAD_PREFS = arrayOf(
+            "arcgis_offline_jobs",
+            "arcgis_offline_jobs_v3"
+        )
         private const val PARTIAL_PREFIX = ".partial-"
         private const val REGION_META_FILE = "region.properties"
         private const val MANIFEST_FILE = "manifest.properties"

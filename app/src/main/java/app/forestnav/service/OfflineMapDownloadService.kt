@@ -74,7 +74,7 @@ object OfflineMapDownloadState {
 }
 
 /**
- * Clean v3 offline downloader.
+ * Clean v4 offline downloader.
  *
  * Each region has an isolated staging directory and an atomic final manifest.
  * Raster imagery and hillshade use ExportTileCacheTask; the normal street map
@@ -1135,10 +1135,10 @@ class OfflineMapDownloadService : Service() {
             .and(0x3fff)
 
     companion object {
-        private const val CHANNEL_ID = "offline_map_download_v3"
+        private const val CHANNEL_ID = "offline_map_download_v4"
         private const val NOTIFICATION_ID = 2101
 
-        private const val PREFS = "arcgis_offline_jobs_v3"
+        private const val PREFS = "arcgis_offline_jobs_v4"
         private const val KEY_KNOWN_IDS = "known_ids"
         private const val KEY_ACTIVE_IDS = "active_ids"
 

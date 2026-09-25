@@ -41,20 +41,20 @@ object MapStyles {
      * critically, keeps the ordinary street map separate from relief.
      */
     fun basemapStyle(layer: MapLayer): BasemapStyle = when (layer) {
-        MapLayer.MAP -> BasemapStyle.ArcGISStreets
+        MapLayer.MAP -> BasemapStyle.OpenStreets
         MapLayer.SATELLITE -> BasemapStyle.ArcGISImageryStandard
-        MapLayer.RELIEF -> BasemapStyle.ArcGISStreetsRelief
+        MapLayer.RELIEF -> BasemapStyle.OpenStreetsRelief
         MapLayer.SATELLITE_TERRAIN -> BasemapStyle.ArcGISImagery
         MapLayer.CUSTOM -> BasemapStyle.ArcGISStreets
     }
 
     fun description(layer: MapLayer): String = when (layer) {
         MapLayer.MAP ->
-            "ArcGIS Streets • обычная карта: дороги, здания, подписи и объекты без слоя рельефа"
+            "Open Streets • обычная карта на Open Basemap: дороги, здания, подписи и объекты без рельефа"
         MapLayer.SATELLITE ->
             "ArcGIS World Imagery • HD спутниковые и аэрофотоснимки"
         MapLayer.RELIEF ->
-            "ArcGIS Streets + Hillshade • обычная карта с отдельным теневым рельефом"
+            "Open Streets Relief • Open Basemap с отдельным теневым рельефом"
         MapLayer.SATELLITE_TERRAIN ->
             "ArcGIS Imagery • спутник + подписи + теневой рельеф"
         MapLayer.CUSTOM ->
@@ -83,12 +83,12 @@ object MapStyles {
         layer != MapLayer.CUSTOM || settings.customStyleUrl.isNotBlank()
 
     /**
-     * Offline sources are explicit. MAP is a vector streets package, so it
-     * cannot accidentally inherit the shaded relief baked into the legacy
-     * World_Street_Map raster export.
+     * Offline sources are explicit. MAP uses Open Streets vector tiles;
+     * RELIEF uses the dedicated Open Streets Relief Base vector style plus
+     * hillshade. The two modes never reuse the same vector package.
      */
     fun offlineSources(layer: MapLayer): List<OfflineSource> = when (layer) {
-        MapLayer.MAP -> listOf(STREETS_VECTOR)
+        MapLayer.MAP -> listOf(OPEN_STREETS_VECTOR)
 
         MapLayer.SATELLITE -> listOf(
             OfflineSource(
@@ -101,7 +101,7 @@ object MapStyles {
         )
 
         MapLayer.RELIEF -> listOf(
-            STREETS_VECTOR,
+            OPEN_STREETS_RELIEF_VECTOR,
             OfflineSource(
                 id = "hillshade",
                 format = OfflinePackageFormat.RASTER,
@@ -143,11 +143,19 @@ object MapStyles {
     const val HILLSHADE_ONLINE =
         "https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer"
 
-    private val STREETS_VECTOR = OfflineSource(
-        id = "streets",
+    private val OPEN_STREETS_VECTOR = OfflineSource(
+        id = "open-streets",
         format = OfflinePackageFormat.VECTOR,
         role = OfflineLayerRole.BASE,
-        vectorBasemapStyle = BasemapStyle.ArcGISStreets,
+        vectorBasemapStyle = BasemapStyle.OpenStreets,
+        targetTilesPerPackage = 24_000.0
+    )
+
+    private val OPEN_STREETS_RELIEF_VECTOR = OfflineSource(
+        id = "open-streets-relief",
+        format = OfflinePackageFormat.VECTOR,
+        role = OfflineLayerRole.BASE,
+        vectorBasemapStyle = BasemapStyle.OpenStreetsReliefBase,
         targetTilesPerPackage = 24_000.0
     )
 

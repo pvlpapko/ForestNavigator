@@ -9,16 +9,16 @@
 
 ## Map engine
 Built-in map modes use ArcGIS Maps SDK for Kotlin 200.8.3:
-- **Map** — `BasemapStyle.ArcGISStreets`.
+- **Map** — `BasemapStyle.OpenStreets`.
 - **Satellite** — `BasemapStyle.ArcGISImageryStandard`.
-- **Relief** — `BasemapStyle.ArcGISStreetsRelief`.
+- **Relief** — `BasemapStyle.OpenStreetsRelief`.
 - **Satellite + relief** — imagery plus an explicit hillshade overlay.
 - **Custom map** remains isolated in the MapLibre renderer.
 
 The ordinary map and relief map are deliberately different sources. Relief is never silently added to the ordinary map.
 
-## Offline maps v3
-Offline data lives only in `files/offline_maps_v3`.
+## Offline maps v4
+Offline data lives only in `files/offline_maps_v4`.
 
 Each download has:
 - an isolated `.partial-<regionId>` staging directory;
@@ -29,12 +29,12 @@ Each download has:
 The renderer ignores partial directories and only opens schema-v3 final manifests. It also selects a single completed region containing the current GPS position, avoiding accidental stacking of unrelated downloaded regions.
 
 ### Package types
-- Ordinary map: ArcGIS Streets **vector tiles** (`.vtpk`) via `ExportVectorTilesTask`.
+- Ordinary map: Open Streets **vector tiles** (`.vtpk`) via `ExportVectorTilesTask`.
 - Satellite: raster tile packages (`.tpkx`) via `ExportTileCacheTask`.
-- Relief: the same vector Streets base plus a separate raster hillshade package.
+- Relief: Open Streets Relief Base vector tiles plus a separate raster hillshade package.
 - Satellite + relief: imagery, hillshade and reference-label packages kept as separate roles.
 
-The previous `arcgis_offline_v2` store is ignored and removed on the IO dispatcher after upgrading, so legacy relief/street packages cannot mix with the new store.
+The previous `arcgis_offline_v2` and `offline_maps_v3` stores are ignored and removed on the IO dispatcher after upgrading, so ArcGIS Streets packages cannot mix with Open Streets packages.
 
 ## Download concurrency
 - Up to 6 packages from one region can download concurrently.
