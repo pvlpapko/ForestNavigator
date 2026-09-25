@@ -14,7 +14,6 @@ import app.forestnav.gnss.CompassEngine
 import app.forestnav.gnss.GnssEngine
 import app.forestnav.gnss.PreciseFixCollector
 import app.forestnav.map.MapLayer
-import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineMapManager
 import app.forestnav.service.OfflineMapDownloadService
 import app.forestnav.service.OfflineMapDownloadState
@@ -117,10 +116,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _online.value = hasValidatedInternet()
 
         viewModelScope.launch(Dispatchers.IO) {
-            offline.cleanupLegacyStorage()
+            offline.cleanupLegacyFiles()
             refreshWaypointsInternal()
-            refreshOfflineRegionsInternal()
         }
+        refreshOfflineRegionsInternal()
 
         viewModelScope.launch {
             downloads.collectLatest { states ->
@@ -158,19 +157,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setLayer(layer: MapLayer) {
         _mapLayer.value = layer
     }
-
-    fun styleUrl(online: Boolean): String? =
-        MapStyles.url(
-            layer = _mapLayer.value,
-            settings = app.settings,
-            online = online
-        )
-
-    fun highDetailMapsEnabled(): Boolean =
-        MapStyles.highDetailEnabled(
-            layer = _mapLayer.value,
-            settings = app.settings
-        )
 
     fun setNavigationTarget(waypoint: Waypoint?) {
         _navigationTarget.value = waypoint
@@ -313,13 +299,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateCustomStyle(value: String) {
-        app.settings.customStyleUrl = value
-    }
-
-    fun customStyle(): String =
-        app.settings.customStyleUrl
-
     fun downloadCurrentRegion(radiusKm: Double) {
         val current: Location =
             location.value ?: return
@@ -335,12 +314,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val maxZoom =
             when (layer) {
-                MapLayer.SATELLITE,
-                MapLayer.SATELLITE_TERRAIN -> 18.0
-
-                MapLayer.MAP,
-                MapLayer.RELIEF,
-                MapLayer.CUSTOM -> 17.0
+                MapLayer.MAP -> 17.0
+                MapLayer.SATELLITE -> 18.0
             }
 
         val minZoom =
@@ -365,6 +340,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelDownload(regionId: Long) {
         OfflineMapDownloadService.cancel(
+            context = app,
+            regionId = regionId
+        )
+    }
+
+    fun resumeDownload(regionId: Long) {
+        OfflineMapDownloadService.resume(
             context = app,
             regionId = regionId
         )

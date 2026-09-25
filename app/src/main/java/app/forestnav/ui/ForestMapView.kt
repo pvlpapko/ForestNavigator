@@ -1,123 +1,61 @@
 package app.forestnav.ui
 
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.map.MapLayer
 import app.forestnav.map.MapStyles
-import app.forestnav.map.OfflineLayerRole
-import app.forestnav.map.OfflineMapManager
-import app.forestnav.map.OfflinePackageFormat
-import com.arcgismaps.Color
-import com.arcgismaps.geometry.GeometryEngine
-import com.arcgismaps.geometry.Point
-import com.arcgismaps.geometry.SpatialReference
-import com.arcgismaps.location.CustomLocationDataSource
-import com.arcgismaps.location.Location as ArcGISLocation
-import com.arcgismaps.location.LocationDisplayAutoPanMode
-import com.arcgismaps.mapping.ArcGISMap
-import com.arcgismaps.mapping.Basemap
-import com.arcgismaps.mapping.Viewpoint
-import com.arcgismaps.mapping.layers.ArcGISTiledLayer
-import com.arcgismaps.mapping.layers.ArcGISVectorTiledLayer
-import com.arcgismaps.mapping.layers.Layer
-import com.arcgismaps.mapping.layers.TileCache
-import com.arcgismaps.mapping.symbology.TextSymbol
-import com.arcgismaps.mapping.view.Graphic
-import com.arcgismaps.mapping.view.GraphicsOverlay
-import com.arcgismaps.mapping.view.MapView
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
-import java.time.Instant
+import org.maplibre.android.annotations.Icon
+import org.maplibre.android.annotations.IconFactory
+import org.maplibre.android.annotations.Marker
+import org.maplibre.android.annotations.MarkerOptions
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.LocationComponentOptions
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
 
-private class AppLocationProvider(
-    sourceLocations: StateFlow<Location?>,
-    sourceHeadings: StateFlow<Float?>
-) : CustomLocationDataSource.LocationProvider {
-
-    override val locations: Flow<ArcGISLocation> =
-        sourceLocations
-            .filterNotNull()
-            .map(::toArcGISLocation)
-
-    override val headings: Flow<Double> =
-        sourceHeadings
-            .filterNotNull()
-            .map { it.toDouble() }
-}
-
-private class ArcMapState {
-    val waypointOverlay = GraphicsOverlay()
-    val location = MutableStateFlow<Location?>(null)
-    val heading = MutableStateFlow<Float?>(null)
-
-    val locationDataSource = CustomLocationDataSource {
-        AppLocationProvider(location, heading)
-    }
-
-    var layer: MapLayer? = null
-    var online: Boolean? = null
-    var offlineRegionId: Long? = null
-    var recenterToken: Int = -1
-
+private class NativeMapState {
+    var map: MapLibreMap? = null
+    var waypointMarkers: List<Marker> = emptyList()
+    val waypointByMarkerId = mutableMapOf<Long, Waypoint>()
     var waypointFingerprint: Int = 0
-    var inputJobs: List<Job> = emptyList()
-    var locationStartJob: Job? = null
+    var loadedStyle: String? = null
+    var loadingStyle: String? = null
+    val waypointIcons = mutableMapOf<WaypointType, Icon>()
+    var initialCameraAnimationDone = false
+    var lastRecenterToken: Int = -1
     var lastScaleMeters: Double = 0.0
-
-    private var lastLocationElapsedNs = Long.MIN_VALUE
-    private var lastLocationTimeMs = Long.MIN_VALUE
-    private var lastLatitude = Double.NaN
-    private var lastLongitude = Double.NaN
-
-    fun submitLocation(value: Location) {
-        val elapsedNs = value.elapsedRealtimeNanos
-        val duplicate =
-            if (elapsedNs > 0L && lastLocationElapsedNs > 0L) {
-                elapsedNs == lastLocationElapsedNs
-            } else {
-                value.time == lastLocationTimeMs &&
-                    value.latitude == lastLatitude &&
-                    value.longitude == lastLongitude
-            }
-
-        if (duplicate) return
-
-        lastLocationElapsedNs = elapsedNs
-        lastLocationTimeMs = value.time
-        lastLatitude = value.latitude
-        lastLongitude = value.longitude
-        location.value = Location(value)
-    }
-
-    fun submitHeading(value: Float?) {
-        if (value == null) return
-
-        val previous = heading.value
-        if (
-            previous == null ||
-            abs(shortestAngle(value - previous)) >= HEADING_UPDATE_EPSILON
-        ) {
-            heading.value = value
-        }
-    }
+    var gestureActive = false
+    var followUser = true
+    var lastLocationElapsedNs: Long = Long.MIN_VALUE
+    var lastLocationTimeMs: Long = Long.MIN_VALUE
+    var lastLocationLatitude: Double = Double.NaN
+    var lastLocationLongitude: Double = Double.NaN
 }
 
 @Composable
@@ -135,113 +73,46 @@ fun ForestMapView(
     onWaypointClick: (Waypoint) -> Unit = {},
     onMapScaleChanged: (Double) -> Unit = {}
 ) {
+    // heading is still consumed by the screen's compass/navigation UI.
+    // Map rotation itself intentionally uses MapLibre's native compass animator.
+    @Suppress("UNUSED_VARIABLE")
+    val externalHeading = heading
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
-
+    val state = remember { NativeMapState() }
     val mapView = remember { MapView(context) }
-    val state = remember { ArcMapState() }
-    val offline = remember { OfflineMapManager(context) }
-
-    val currentWaypoints = rememberUpdatedState(waypoints)
-    val currentPlacement = rememberUpdatedState(pointPlacementEnabled)
+    val currentPlacementEnabled = rememberUpdatedState(pointPlacementEnabled)
     val currentMapClick = rememberUpdatedState(onMapClick)
     val currentLongPress = rememberUpdatedState(onMapLongPress)
     val currentWaypointClick = rememberUpdatedState(onWaypointClick)
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
-    LaunchedEffect(
-        location.elapsedRealtimeNanos,
-        location.time,
-        location.latitude,
-        location.longitude
-    ) {
-        state.submitLocation(location)
-    }
-
-    LaunchedEffect(heading) {
-        state.submitHeading(heading)
-    }
+    val styleUrl = remember(layer) { MapStyles.styleUrl(layer) }
+    @Suppress("UNUSED_VARIABLE")
+    val connectivityState = online
 
     DisposableEffect(mapView, lifecycleOwner) {
-        lifecycleOwner.lifecycle.addObserver(mapView)
-        mapView.graphicsOverlays.add(state.waypointOverlay)
-
-        state.inputJobs = listOf(
-            scope.launch {
-                mapView.onSingleTapConfirmed.collectLatest { event ->
-                    val identified = mapView.identifyGraphicsOverlay(
-                        graphicsOverlay = state.waypointOverlay,
-                        screenCoordinate = event.screenCoordinate,
-                        tolerance = 26.0,
-                        returnPopupsOnly = false,
-                        maximumResults = 1
-                    ).getOrNull()
-
-                    val waypointId = identified
-                        ?.geoElements
-                        ?.firstOrNull()
-                        ?.attributes
-                        ?.get(WAYPOINT_ID)
-                        ?.toString()
-                        ?.toLongOrNull()
-
-                    val waypoint = waypointId?.let { id ->
-                        currentWaypoints.value.firstOrNull {
-                            it.id == id
-                        }
-                    }
-
-                    if (waypoint != null) {
-                        currentWaypointClick.value(waypoint)
-                    } else if (currentPlacement.value) {
-                        toWgs84(
-                            mapView.screenToLocation(event.screenCoordinate)
-                        )?.let { point ->
-                            currentMapClick.value(point.y, point.x)
-                        }
-                    }
-                }
-            },
-            scope.launch {
-                mapView.onLongPress.collectLatest { event ->
-                    toWgs84(
-                        mapView.screenToLocation(event.screenCoordinate)
-                    )?.let { point ->
-                        currentLongPress.value(point.y, point.x)
-                    }
-                }
-            },
-            scope.launch {
-                mapView.viewpointChanged.collectLatest {
-                    val scaleMeters =
-                        (mapView.unitsPerDip * 160.0).coerceAtLeast(0.1)
-
-                    val previous = state.lastScaleMeters
-                    val changed =
-                        previous <= 0.0 ||
-                            abs(scaleMeters - previous) /
-                            previous.coerceAtLeast(0.1) > 0.025
-
-                    if (changed) {
-                        state.lastScaleMeters = scaleMeters
-                        currentScaleCallback.value(scaleMeters)
-                    }
-                }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> mapView.onStart()
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                Lifecycle.Event.ON_STOP -> mapView.onStop()
+                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                else -> Unit
             }
-        )
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        mapView.onCreate(null)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) mapView.onStart()
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) mapView.onResume()
 
         onDispose {
-            state.inputJobs.forEach { it.cancel() }
-            state.inputJobs = emptyList()
-
-            state.locationStartJob?.cancel()
-            state.locationStartJob = null
-
-            lifecycleOwner.lifecycle.removeObserver(mapView)
-            runCatching {
-                mapView.onDestroy(lifecycleOwner)
-            }
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runCatching { mapView.onPause() }
+            runCatching { mapView.onStop() }
+            runCatching { mapView.onDestroy() }
         }
     }
 
@@ -249,350 +120,363 @@ fun ForestMapView(
         modifier = modifier,
         factory = {
             mapView.apply {
-                isAttributionBarVisible = true
+                getMapAsync { map ->
+                    state.map = map
 
-                setViewpoint(
-                    Viewpoint(
-                        Point(
-                            location.longitude,
-                            location.latitude,
-                            SpatialReference.wgs84()
-                        ),
-                        INITIAL_SCALE
+                    map.uiSettings.isCompassEnabled = false
+                    map.uiSettings.isLogoEnabled = true
+                    map.uiSettings.isAttributionEnabled = true
+                    map.uiSettings.isRotateGesturesEnabled = true
+                    map.uiSettings.isTiltGesturesEnabled = false
+                    map.setMaxZoomPreference(25.5)
+
+                    map.addOnMapClickListener { point ->
+                        if (currentPlacementEnabled.value) {
+                            currentMapClick.value(point.latitude, point.longitude)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+
+                    map.addOnMapLongClickListener { point ->
+                        currentLongPress.value(point.latitude, point.longitude)
+                        true
+                    }
+
+                    @Suppress("DEPRECATION")
+                    map.setOnMarkerClickListener { marker ->
+                        val waypoint = state.waypointByMarkerId[marker.id]
+                        if (waypoint != null) {
+                            currentWaypointClick.value(waypoint)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+
+                    map.addOnCameraMoveStartedListener { reason ->
+                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                            // A manual pan/zoom/rotate switches to free exploration.
+                            // Nothing recenters again until the user taps "Я здесь".
+                            state.gestureActive = true
+                            state.followUser = false
+                            val component = map.locationComponent
+                            if (component.isLocationComponentActivated) {
+                                component.cameraMode = CameraMode.NONE
+                            }
+                        }
+                    }
+
+                    map.addOnCameraMoveListener {
+                        publishScale(map, mapView, state, currentScaleCallback.value)
+                    }
+
+                    map.addOnCameraIdleListener {
+                        publishScale(
+                            map,
+                            mapView,
+                            state,
+                            currentScaleCallback.value,
+                            force = true
+                        )
+                        state.gestureActive = false
+                    }
+
+                    map.cameraPosition = CameraPosition.Builder()
+                        .target(LatLng(location.latitude, location.longitude))
+                        .zoom(15.5)
+                        .bearing(0.0)
+                        .tilt(0.0)
+                        .build()
+
+                    state.lastRecenterToken = recenterToken
+                    applyStyle(
+                        context = context,
+                        map = map,
+                        state = state,
+                        styleUrl = styleUrl,
+                        location = location,
+                        waypoints = waypoints
                     )
-                )
 
-                state.recenterToken = recenterToken
-                state.submitLocation(location)
-                state.submitHeading(heading)
-
-                val selection = offlineSelection(
-                    offline = offline,
-                    online = online,
-                    layer = layer,
-                    location = location
-                )
-
-                installMap(
-                    mapView = this,
-                    state = state,
-                    layer = layer,
-                    online = online,
-                    selection = selection
-                )
-
-                configureLocationDisplay(
-                    mapView = this,
-                    state = state,
-                    scope = scope
-                )
-
-                updateWaypoints(state, waypoints)
+                    mapView.post {
+                        publishScale(
+                            map,
+                            mapView,
+                            state,
+                            currentScaleCallback.value,
+                            force = true
+                        )
+                    }
+                }
             }
         },
-        update = { view ->
-            val selection = offlineSelection(
-                offline = offline,
-                online = online,
-                layer = layer,
-                location = location
-            )
+        update = {
+            val map = state.map ?: return@AndroidView
 
-            val mapChanged =
-                state.layer != layer ||
-                    state.online != online ||
-                    (
-                        !online &&
-                            state.offlineRegionId != selection?.regionId
-                        )
-
-            if (mapChanged) {
-                installMap(
-                    mapView = view,
+            if (styleUrl != null &&
+                styleUrl != state.loadedStyle &&
+                styleUrl != state.loadingStyle
+            ) {
+                applyStyle(
+                    context = context,
+                    map = map,
                     state = state,
-                    layer = layer,
-                    online = online,
-                    selection = selection
+                    styleUrl = styleUrl,
+                    location = location,
+                    waypoints = waypoints
                 )
-
-                scope.launch {
-                    view.locationDisplay.setAutoPanMode(
-                        LocationDisplayAutoPanMode.CompassNavigation
-                    )
-                }
+                return@AndroidView
             }
 
-            updateWaypoints(state, waypoints)
+            updateLocationPuck(map, state, location)
+            updateWaypointAnnotations(context, map, state, waypoints)
 
-            if (state.recenterToken != recenterToken) {
-                state.recenterToken = recenterToken
-
-                scope.launch {
-                    val center = Point(
-                        location.longitude,
-                        location.latitude,
-                        SpatialReference.wgs84()
-                    )
-
-                    view.setViewpointCenter(
-                        center,
-                        RECENTER_SCALE
-                    )
-
-                    view.locationDisplay.initialZoomScale =
-                        RECENTER_SCALE
-
-                    view.locationDisplay.setAutoPanMode(
-                        LocationDisplayAutoPanMode.CompassNavigation
-                    )
-                }
-            }
-        }
-    )
-}
-
-private fun offlineSelection(
-    offline: OfflineMapManager,
-    online: Boolean,
-    layer: MapLayer,
-    location: Location
-): OfflineMapManager.OfflineSelection? {
-    if (online) return null
-
-    return offline.selectionFor(
-        layer = layer,
-        latitude = location.latitude,
-        longitude = location.longitude
-    )
-}
-
-private fun installMap(
-    mapView: MapView,
-    state: ArcMapState,
-    layer: MapLayer,
-    online: Boolean,
-    selection: OfflineMapManager.OfflineSelection?
-) {
-    val currentViewpoint = mapView.getCurrentViewpoint(
-        com.arcgismaps.mapping.ViewpointType.CenterAndScale
-    )
-
-    val map = if (online) {
-        createOnlineMap(
-            layer = layer,
-            currentViewpoint = currentViewpoint
-        )
-    } else {
-        createOfflineMap(
-            selection = selection,
-            currentViewpoint = currentViewpoint
-        )
-    }
-
-    mapView.map = map
-
-    state.layer = layer
-    state.online = online
-    state.offlineRegionId = selection?.regionId
-}
-
-private fun createOnlineMap(
-    layer: MapLayer,
-    currentViewpoint: Viewpoint?
-): ArcGISMap =
-    ArcGISMap(MapStyles.basemapStyle(layer)).apply {
-        initialViewpoint = currentViewpoint
-
-        if (layer == MapLayer.SATELLITE_TERRAIN) {
-            operationalLayers.add(
-                ArcGISTiledLayer(
-                    MapStyles.HILLSHADE_ONLINE
-                ).apply {
-                    opacity = 0.22f
-                }
-            )
-        }
-    }
-
-private fun createOfflineMap(
-    selection: OfflineMapManager.OfflineSelection?,
-    currentViewpoint: Viewpoint?
-): ArcGISMap {
-    if (selection == null) {
-        return ArcGISMap(
-            SpatialReference.webMercator()
-        ).apply {
-            initialViewpoint = currentViewpoint
-        }
-    }
-
-    val baseLayers = mutableListOf<Layer>()
-    val referenceLayers = mutableListOf<Layer>()
-    val overlays = mutableListOf<Layer>()
-
-    selection.packages.forEach { item ->
-        val localLayer: Layer =
-            when (item.format) {
-                OfflinePackageFormat.RASTER ->
-                    ArcGISTiledLayer(
-                        TileCache(item.file.absolutePath)
-                    )
-
-                OfflinePackageFormat.VECTOR ->
-                    ArcGISVectorTiledLayer(
-                        item.file.absolutePath
-                    )
-            }
-
-        localLayer.opacity = item.opacity
-
-        when (item.role) {
-            OfflineLayerRole.BASE ->
-                baseLayers += localLayer
-
-            OfflineLayerRole.HILLSHADE ->
-                overlays += localLayer
-
-            OfflineLayerRole.REFERENCE ->
-                referenceLayers += localLayer
-        }
-    }
-
-    if (
-        baseLayers.isEmpty() &&
-        referenceLayers.isEmpty() &&
-        overlays.isEmpty()
-    ) {
-        return ArcGISMap(
-            SpatialReference.webMercator()
-        ).apply {
-            initialViewpoint = currentViewpoint
-        }
-    }
-
-    return ArcGISMap(
-        Basemap(
-            baseLayers = baseLayers,
-            referenceLayers = referenceLayers
-        )
-    ).apply {
-        initialViewpoint = currentViewpoint
-        operationalLayers.addAll(overlays)
-    }
-}
-
-private fun configureLocationDisplay(
-    mapView: MapView,
-    state: ArcMapState,
-    scope: kotlinx.coroutines.CoroutineScope
-) {
-    val display = mapView.locationDisplay
-
-    display.showLocation = true
-    display.showAccuracy = true
-    display.showPingAnimationSymbol = false
-    display.useCourseSymbolOnMovement = false
-    display.initialZoomScale = INITIAL_SCALE
-    display.navigationPointHeightFactor = 0.5f
-    display.dataSource = state.locationDataSource
-
-    state.locationStartJob?.cancel()
-    state.locationStartJob = scope.launch {
-        state.locationDataSource
-            .start()
-            .onSuccess {
-                display.setAutoPanMode(
-                    LocationDisplayAutoPanMode.CompassNavigation
+            if (state.lastRecenterToken != recenterToken) {
+                state.gestureActive = false
+                state.followUser = true
+                enableNativeFollow(
+                    map = map,
+                    location = location,
+                    minimumZoom = 17.0,
+                    transitionDurationMs = 550L
                 )
+                state.lastRecenterToken = recenterToken
             }
+        }
+    )
+}
+
+private fun publishScale(
+    map: MapLibreMap,
+    mapView: MapView,
+    state: NativeMapState,
+    callback: (Double) -> Unit,
+    force: Boolean = false
+) {
+    val width = mapView.width
+    if (width <= 0) return
+
+    val zoom = map.cameraPosition.zoom
+    val latitude = map.cameraPosition.target?.latitude ?: 0.0
+    val metersPerPixel = 156543.03392 * cos(Math.toRadians(latitude)) / 2.0.pow(zoom)
+    val referencePixels = minOf(
+        width * 0.32,
+        160.0 * mapView.resources.displayMetrics.density
+    )
+    val scaleMeters = (metersPerPixel * referencePixels).coerceAtLeast(0.1)
+
+    val changedEnough = state.lastScaleMeters <= 0.0 ||
+        abs(scaleMeters - state.lastScaleMeters) /
+        state.lastScaleMeters.coerceAtLeast(0.1) > 0.025
+
+    if (force || changedEnough) {
+        state.lastScaleMeters = scaleMeters
+        callback(scaleMeters)
     }
 }
 
-private fun toArcGISLocation(source: Location): ArcGISLocation =
-    ArcGISLocation.create(
-        position = Point(
-            source.longitude,
-            source.latitude,
-            SpatialReference.wgs84()
-        ),
-        horizontalAccuracy =
-            if (source.hasAccuracy()) {
-                source.accuracy.toDouble()
-            } else {
-                Double.NaN
-            },
-        verticalAccuracy =
-            if (source.hasVerticalAccuracy()) {
-                source.verticalAccuracyMeters.toDouble()
-            } else {
-                Double.NaN
-            },
-        speed =
-            if (source.hasSpeed()) {
-                source.speed.toDouble()
-            } else {
-                Double.NaN
-            },
-        course =
-            if (source.hasBearing()) {
-                source.bearing.toDouble()
-            } else {
-                Double.NaN
-            },
-        lastKnown =
-            System.currentTimeMillis() - source.time >
-                LAST_KNOWN_AFTER_MS,
-        timestamp = Instant.ofEpochMilli(source.time)
-    )
-
-private fun updateWaypoints(
-    state: ArcMapState,
+private fun applyStyle(
+    context: Context,
+    map: MapLibreMap,
+    state: NativeMapState,
+    styleUrl: String?,
+    location: Location,
     waypoints: List<Waypoint>
 ) {
-    val fingerprint = waypoints.fold(1) { acc, waypoint ->
-        var value = 31 * acc + waypoint.id.hashCode()
-        value = 31 * value + waypoint.latitude.hashCode()
-        value = 31 * value + waypoint.longitude.hashCode()
-        value = 31 * value + waypoint.type.hashCode()
-        value
+    val url = styleUrl ?: return
+    if (url == state.loadedStyle || url == state.loadingStyle) return
+    state.loadingStyle = url
+
+    val onLoaded = Style.OnStyleLoaded { style ->
+        state.loadedStyle = url
+        state.loadingStyle = null
+        state.waypointMarkers = emptyList()
+        state.waypointByMarkerId.clear()
+        state.waypointFingerprint = 0
+
+        setupLocationPuck(
+            context = context,
+            map = map,
+            style = style,
+            location = location,
+            followUser = state.followUser
+        )
+        updateWaypointAnnotations(context, map, state, waypoints)
+
+        if (!state.initialCameraAnimationDone) {
+            state.followUser = true
+            enableNativeFollow(
+                map = map,
+                location = location,
+                minimumZoom = 16.5,
+                transitionDurationMs = 650L
+            )
+            state.initialCameraAnimationDone = true
+        } else if (state.followUser) {
+            enableNativeFollow(
+                map = map,
+                location = location,
+                minimumZoom = null,
+                transitionDurationMs = 250L
+            )
+        }
     }
 
+    if (MapStyles.isJsonStyle(url)) {
+        map.setStyle(Style.Builder().fromJson(MapStyles.jsonPayload(url)), onLoaded)
+    } else {
+        map.setStyle(url, onLoaded)
+    }
+}
+
+@SuppressLint("MissingPermission")
+private fun setupLocationPuck(
+    context: Context,
+    map: MapLibreMap,
+    style: Style,
+    location: Location,
+    followUser: Boolean
+) {
+    val component = map.locationComponent
+
+    if (!component.isLocationComponentActivated) {
+        val puckOptions = LocationComponentOptions.builder(context)
+            .bearingOnTop(true)
+            .compassAnimationEnabled(true)
+            .trackingGesturesManagement(false)
+            .build()
+
+        component.activateLocationComponent(
+            LocationComponentActivationOptions.builder(context, style)
+                .useDefaultLocationEngine(false)
+                .useSpecializedLocationLayer(false)
+                .locationComponentOptions(puckOptions)
+                .build()
+        )
+    }
+
+    component.isLocationComponentEnabled = true
+    component.renderMode = RenderMode.COMPASS
+    component.setMaxAnimationFps(60)
+    component.forceLocationUpdate(location)
+    component.cameraMode = if (followUser) CameraMode.TRACKING_COMPASS else CameraMode.NONE
+}
+
+@SuppressLint("MissingPermission")
+private fun updateLocationPuck(
+    map: MapLibreMap,
+    state: NativeMapState,
+    location: Location
+) {
+    val elapsedNs = location.elapsedRealtimeNanos
+    val sameSample = if (elapsedNs > 0L && state.lastLocationElapsedNs > 0L) {
+        elapsedNs == state.lastLocationElapsedNs
+    } else {
+        location.time == state.lastLocationTimeMs &&
+            location.latitude == state.lastLocationLatitude &&
+            location.longitude == state.lastLocationLongitude
+    }
+    if (sameSample) return
+
+    state.lastLocationElapsedNs = elapsedNs
+    state.lastLocationTimeMs = location.time
+    state.lastLocationLatitude = location.latitude
+    state.lastLocationLongitude = location.longitude
+
+    val component = map.locationComponent
+    if (component.isLocationComponentActivated && component.isLocationComponentEnabled) {
+        component.forceLocationUpdate(location)
+    }
+}
+
+@SuppressLint("MissingPermission")
+private fun enableNativeFollow(
+    map: MapLibreMap,
+    location: Location,
+    minimumZoom: Double?,
+    transitionDurationMs: Long
+) {
+    val component = map.locationComponent
+    if (!component.isLocationComponentActivated || !component.isLocationComponentEnabled) return
+
+    component.forceLocationUpdate(location)
+    component.renderMode = RenderMode.COMPASS
+    component.setMaxAnimationFps(60)
+
+    val targetZoom = minimumZoom?.let { maxOf(map.cameraPosition.zoom, it) }
+    component.setCameraMode(
+        CameraMode.TRACKING_COMPASS,
+        transitionDurationMs,
+        targetZoom,
+        null,
+        0.0,
+        null
+    )
+}
+
+@Suppress("DEPRECATION")
+private fun updateWaypointAnnotations(
+    context: Context,
+    map: MapLibreMap,
+    state: NativeMapState,
+    waypoints: List<Waypoint>
+) {
+    val fingerprint = waypoints.fold(1) { acc, p -> 31 * acc + p.hashCode() }
     if (fingerprint == state.waypointFingerprint) return
 
-    state.waypointOverlay.graphics.clear()
+    state.waypointMarkers.forEach { marker ->
+        runCatching { map.removeMarker(marker) }
+    }
+    state.waypointMarkers = emptyList()
+    state.waypointByMarkerId.clear()
 
-    waypoints.forEach { waypoint ->
-        val symbol = TextSymbol().apply {
-            text = waypointSymbol(waypoint.type)
-            size = 23.0f
-            color = Color.white
-            haloColor = Color.fromRgba(
-                20,
-                28,
-                23,
-                255
-            )
-            haloWidth = 2.0f
-        }
-
-        val graphic = Graphic(
-            Point(
-                waypoint.longitude,
-                waypoint.latitude,
-                SpatialReference.wgs84()
-            ),
-            symbol
+    state.waypointMarkers = waypoints.map { p ->
+        val marker = map.addMarker(
+            MarkerOptions()
+                .position(LatLng(p.latitude, p.longitude))
+                .icon(
+                    state.waypointIcons.getOrPut(p.type) {
+                        createWaypointIcon(context, p.type)
+                    }
+                )
+                .title(p.name)
+                .snippet(
+                    p.accuracyMeters?.let {
+                        "Точность ±${String.format("%.1f", it)} м"
+                    } ?: "Точка поставлена вручную на карте"
+                )
         )
-
-        graphic.attributes[WAYPOINT_ID] = waypoint.id
-        state.waypointOverlay.graphics.add(graphic)
+        state.waypointByMarkerId[marker.id] = p
+        marker
     }
 
     state.waypointFingerprint = fingerprint
 }
 
-private fun waypointSymbol(type: WaypointType): String =
-    when (type) {
+@Suppress("DEPRECATION")
+private fun createWaypointIcon(context: Context, type: WaypointType): Icon {
+    val density = context.resources.displayMetrics.density
+    val size = (48f * density).toInt().coerceAtLeast(48)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 20, 30, 24)
+        style = Paint.Style.FILL
+    }
+    val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+    }
+
+    val radius = size * 0.46f
+    canvas.drawCircle(size / 2f, size / 2f, radius, bg)
+    canvas.drawCircle(size / 2f, size / 2f, radius, ring)
+
+    val symbol = when (type) {
         WaypointType.CAR -> "🚗"
         WaypointType.MUSHROOM -> "🍄"
         WaypointType.WATER -> "💧"
@@ -601,26 +485,16 @@ private fun waypointSymbol(type: WaypointType): String =
         WaypointType.CUSTOM -> "📍"
     }
 
-private fun toWgs84(point: Point?): Point? {
-    if (point == null) return null
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = 30f * density
+        typeface = Typeface.DEFAULT_BOLD
+        color = if (type == WaypointType.FAVORITE) Color.YELLOW else Color.WHITE
+    }
 
-    return GeometryEngine.projectOrNull(
-        point,
-        SpatialReference.wgs84()
-    )
+    val fm = paint.fontMetrics
+    val y = size / 2f - (fm.ascent + fm.descent) / 2f
+    canvas.drawText(symbol, size / 2f, y, paint)
+
+    return IconFactory.getInstance(context).fromBitmap(bitmap)
 }
-
-private fun shortestAngle(value: Float): Float {
-    var delta = value % 360f
-
-    if (delta > 180f) delta -= 360f
-    if (delta < -180f) delta += 360f
-
-    return delta
-}
-
-private const val WAYPOINT_ID = "waypointId"
-private const val INITIAL_SCALE = 7_500.0
-private const val RECENTER_SCALE = 3_500.0
-private const val LAST_KNOWN_AFTER_MS = 5_000L
-private const val HEADING_UPDATE_EPSILON = 0.05f

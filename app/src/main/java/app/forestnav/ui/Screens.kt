@@ -140,36 +140,20 @@ fun MapScreen(vm: AppViewModel) {
                         pointPlacementMode = false
                     }
 
-                    if (layer == MapLayer.CUSTOM) {
-                        CustomMapLibreView(
-                            modifier = Modifier.fillMaxSize(),
-                            location = location!!,
-                            heading = heading,
-                            waypoints = waypoints,
-                            styleUrl = vm.styleUrl(online),
-                            recenterToken = recenterToken,
-                            pointPlacementEnabled = pointPlacementMode,
-                            onMapClick = mapClick,
-                            onMapLongPress = mapClick,
-                            onWaypointClick = waypointClick,
-                            onMapScaleChanged = { mapScaleMeters = it }
-                        )
-                    } else {
-                        ForestMapView(
-                            modifier = Modifier.fillMaxSize(),
-                            location = location!!,
-                            heading = heading,
-                            waypoints = waypoints,
-                            layer = layer,
-                            online = online,
-                            recenterToken = recenterToken,
-                            pointPlacementEnabled = pointPlacementMode,
-                            onMapClick = mapClick,
-                            onMapLongPress = mapClick,
-                            onWaypointClick = waypointClick,
-                            onMapScaleChanged = { mapScaleMeters = it }
-                        )
-                    }
+                    ForestMapView(
+                        modifier = Modifier.fillMaxSize(),
+                        location = location!!,
+                        heading = heading,
+                        waypoints = waypoints,
+                        layer = layer,
+                        online = online,
+                        recenterToken = recenterToken,
+                        pointPlacementEnabled = pointPlacementMode,
+                        onMapClick = mapClick,
+                        onMapLongPress = mapClick,
+                        onWaypointClick = waypointClick,
+                        onMapScaleChanged = { mapScaleMeters = it }
+                    )
                 }
 
                 if (location != null) {
@@ -814,9 +798,8 @@ private fun OfflineScreen(vm: AppViewModel) {
             Text("Скачать область", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слой: ${layer.title}. Центр — текущая GPS-позиция. " +
-                    "Обычная карта скачивается отдельными векторными пакетами без рельефа. " +
-                    "Спутник и слои рельефа хранятся отдельно; большие области делятся на пакеты и скачиваются параллельно. " +
-                    "Готовые части при продолжении не скачиваются повторно."
+                    "Карта Open OSM Style и спутник Open Hybrid скачиваются напрямую в офлайн-базу MapLibre. " +
+                    "Ограничение MapLibre на 6000 тайлов снято; загрузка использует расширенный пул сетевых запросов."
             )
 
             Spacer(Modifier.height(10.dp))
@@ -918,10 +901,8 @@ private fun OfflineScreen(vm: AppViewModel) {
 
                                     else -> {
                                         val ratio = if (p.requiredResources > 0L) {
-                                            (
-                                                p.completedResources.toFloat() +
-                                                    p.currentPackageProgress / 100f
-                                                ) / p.requiredResources
+                                            p.completedResources.toFloat() /
+                                                p.requiredResources.toFloat()
                                         } else 0f
 
                                         if (p.requiredResources > 0L) {
@@ -930,14 +911,14 @@ private fun OfflineScreen(vm: AppViewModel) {
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                             Text(
-                                                "Пакетов: ${p.completedResources}/${p.requiredResources} • " +
-                                                    "текущий ${p.currentPackageProgress}% • " +
+                                                "Ресурсов: ${p.completedResources}/${p.requiredResources} • " +
+                                                    "${p.currentPackageProgress}% • " +
                                                     "${p.bytes / (1024 * 1024)} МБ",
                                                 style = MaterialTheme.typography.bodySmall
                                             )
-                                            if (p.needsRetry && p.missingResources > 0L) {
+                                            if (p.needsRetry) {
                                                 Text(
-                                                    "Автодокачивание: осталось ${p.missingResources} пакетов. Приложение продолжит само.",
+                                                    "MapLibre повторит временно недоступные запросы автоматически.",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
@@ -945,7 +926,7 @@ private fun OfflineScreen(vm: AppViewModel) {
                                         } else {
                                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                             Text(
-                                                "Подготовка области или ожидание свободного слота…",
+                                                "Получаем список ресурсов карты…",
                                                 style = MaterialTheme.typography.bodySmall
                                             )
                                         }
@@ -963,6 +944,13 @@ private fun OfflineScreen(vm: AppViewModel) {
                                                     Icon(Icons.Default.Pause, null)
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("Пауза")
+                                                }
+                                            }
+                                            if (p.cancelled && !p.active) {
+                                                TextButton(onClick = { vm.resumeDownload(id) }) {
+                                                    Icon(Icons.Default.PlayArrow, null)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Продолжить")
                                                 }
                                             }
                                             TextButton(onClick = { vm.deleteDownload(id) }) {
@@ -1011,7 +999,6 @@ private fun OfflineScreen(vm: AppViewModel) {
 
 @Composable
 private fun SettingsScreen(vm: AppViewModel) {
-    var custom by remember { mutableStateOf(vm.customStyle()) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val capabilities = remember(context) { SensorCapabilities.read(context) }
 
@@ -1024,38 +1011,31 @@ private fun SettingsScreen(vm: AppViewModel) {
     ) {
         Text("Карты", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Основа интерфейса, навигации и указателей сохранена от версии 1.2.9. " +
-                "3D удалён полностью. Карта — ArcGIS Open OSM с домами и подробными подписями; " +
-                "рельеф — тот же подробный Open OSM с теневым рельефом; спутник — ArcGIS World Imagery; " +
-                "спутник+рельеф — World Imagery с подписями и hillshade."
+            "Карта — Open OSM Style. Спутник — Open Hybrid. " +
+                "Режимы «Рельеф» и «Спутник+рельеф» удалены. " +
+                "Обе карты работают через один MapLibre-движок онлайн и офлайн."
         )
         AssistChip(
             onClick = {},
-            label = { Text("ArcGIS + Open OSM • 2D") },
+            label = { Text("Open Basemap • MapLibre • 2D") },
             leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
         )
 
         HorizontalDivider()
 
-        Text("Свой MapLibre style URL")
-        OutlinedTextField(
-            value = custom,
-            onValueChange = { custom = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("https://…/style.json") },
-            singleLine = true
+        Text("Загрузка карт", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Офлайн-карты скачиваются напрямую ресурсами стиля. " +
+                "Встроенный лимит MapLibre на 6000 тайлов снят, а сетевой пул расширен. " +
+                "Фактическая скорость дальше зависит только от сети, устройства и сервера поставщика."
         )
-        Button(onClick = { vm.updateCustomStyle(custom) }) {
-            Text("Сохранить URL")
-        }
 
         HorizontalDivider()
 
         Text("Энергопотребление", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Обычный режим GNSS запрашивает обновления не чаще необходимого для пешей " +
-                "навигации. Режим повышенной точности включается только при сохранении " +
-                "точной точки. Компас сглаживается по круговой шкале и обновляет направление без мелкой дрожи."
+            "Режим повышенной точности GNSS включается только при сохранении точной точки. " +
+                "Компас сглаживается и обновляет направление без мелкой дрожи."
         )
 
         HorizontalDivider()
