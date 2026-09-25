@@ -8,6 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -31,6 +34,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -93,6 +97,13 @@ class OfflineMapDownloadService : Service() {
 
         OkHttpClient.Builder()
             .dispatcher(dispatcher)
+            .connectionPool(
+                ConnectionPool(
+                    MAX_IDLE_CONNECTIONS,
+                    5,
+                    TimeUnit.MINUTES
+                )
+            )
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)
             .writeTimeout(45, TimeUnit.SECONDS)
@@ -276,7 +287,7 @@ class OfflineMapDownloadService : Service() {
 
                                 when (
                                     val result =
-                                        downloadTile(task)
+                                        downloadTile(meta, task)
                                 ) {
                                     is TileResult.Success -> {
                                         completed.incrementAndGet()
@@ -378,6 +389,7 @@ class OfflineMapDownloadService : Service() {
     }
 
     private fun downloadTile(
+        meta: OfflineMapManager.RegionMeta,
         task: OfflineMapManager.TileTask
     ): TileResult {
         val url = MapStyles.tileUrl(
@@ -393,7 +405,7 @@ class OfflineMapDownloadService : Service() {
             try {
                 val request = Request.Builder()
                     .url(url)
-                    .header("User-Agent", "ForestNavigator/1.7")
+                    .header("User-Agent", "ForestNavigator/1.7.3")
                     .build()
 
                 httpClient.newCall(request).execute().use { response ->
@@ -416,11 +428,6 @@ class OfflineMapDownloadService : Service() {
                                     "Провайдер вернул пустой ответ"
                                 )
 
-                            val data = body.bytes()
-                            if (data.size <= MIN_TILE_BYTES) {
-                                return TileResult.Skip
-                            }
-
                             task.file.parentFile?.mkdirs()
 
                             val temp = File(
@@ -428,8 +435,40 @@ class OfflineMapDownloadService : Service() {
                                 task.file.name + ".part"
                             )
 
-                            FileOutputStream(temp).use { output ->
-                                output.write(data)
+                            val written = body.byteStream().use { input ->
+                                FileOutputStream(temp).use { output ->
+                                    input.copyTo(
+                                        output,
+                                        NETWORK_BUFFER_BYTES
+                                    )
+                                }
+                            }
+
+                            if (written <= MIN_TILE_BYTES) {
+                                temp.delete()
+                                return TileResult.Skip
+                            }
+
+                            // Only boundary tiles are decoded. Interior tiles
+                            // stay byte-for-byte as received, which avoids GC
+                            // pressure while 64 workers are downloading.
+                            val nominalClip =
+                                manager.tileClip(
+                                    meta = meta,
+                                    task = task
+                                )
+
+                            if (
+                                !nominalClip.isFull(
+                                    task.source.tileSize,
+                                    task.source.tileSize
+                                )
+                            ) {
+                                cropBoundaryTile(
+                                    meta = meta,
+                                    task = task,
+                                    file = temp
+                                )
                             }
 
                             if (task.file.exists()) {
@@ -441,7 +480,7 @@ class OfflineMapDownloadService : Service() {
                             }
 
                             return TileResult.Success(
-                                data.size.toLong()
+                                task.file.length()
                             )
                         }
 
@@ -479,6 +518,82 @@ class OfflineMapDownloadService : Service() {
                 (lastError?.message ?: "неизвестная ошибка"),
             lastError
         )
+    }
+
+    private fun cropBoundaryTile(
+        meta: OfflineMapManager.RegionMeta,
+        task: OfflineMapManager.TileTask,
+        file: File
+    ) {
+        val sourceBitmap =
+            BitmapFactory.decodeFile(file.absolutePath)
+                ?: return
+
+        try {
+            val clip = manager.tileClip(
+                meta = meta,
+                task = task,
+                width = sourceBitmap.width,
+                height = sourceBitmap.height
+            )
+
+            if (
+                clip.isFull(
+                    sourceBitmap.width,
+                    sourceBitmap.height
+                )
+            ) {
+                return
+            }
+
+            val masked = Bitmap.createBitmap(
+                sourceBitmap.width,
+                sourceBitmap.height,
+                Bitmap.Config.ARGB_8888
+            )
+
+            try {
+                val canvas = Canvas(masked)
+                canvas.clipRect(
+                    clip.left,
+                    clip.top,
+                    clip.right,
+                    clip.bottom
+                )
+                canvas.drawBitmap(
+                    sourceBitmap,
+                    0f,
+                    0f,
+                    null
+                )
+
+                val cropped = File(
+                    file.parentFile,
+                    file.name + ".crop"
+                )
+
+                FileOutputStream(cropped).use { output ->
+                    check(
+                        masked.compress(
+                            Bitmap.CompressFormat.PNG,
+                            100,
+                            output
+                        )
+                    ) {
+                        "Не удалось обрезать край тайла"
+                    }
+                }
+
+                file.delete()
+                check(cropped.renameTo(file)) {
+                    "Не удалось заменить краевой тайл"
+                }
+            } finally {
+                masked.recycle()
+            }
+        } finally {
+            sourceBitmap.recycle()
+        }
     }
 
     private fun pauseRegion(id: Long) {
@@ -839,12 +954,14 @@ class OfflineMapDownloadService : Service() {
         private const val EXTRA_MAX_ZOOM = "max_zoom"
         private const val EXTRA_REGION_ID = "region_id"
 
-        private const val DOWNLOAD_WORKERS_PER_REGION = 48
-        private const val TILE_QUEUE_CAPACITY = 768
-        private const val MAX_HTTP_REQUESTS = 96
-        private const val MAX_HTTP_REQUESTS_PER_HOST = 48
+        private const val DOWNLOAD_WORKERS_PER_REGION = 64
+        private const val TILE_QUEUE_CAPACITY = 1_536
+        private const val MAX_HTTP_REQUESTS = 128
+        private const val MAX_HTTP_REQUESTS_PER_HOST = 64
         private const val TILE_RETRIES = 4
         private const val MIN_TILE_BYTES = 128L
+        private const val MAX_IDLE_CONNECTIONS = 64
+        private const val NETWORK_BUFFER_BYTES = 64 * 1024
         private const val SKIP_SUFFIX = ".skip"
         private const val PROGRESS_PUBLISH_INTERVAL_MS = 750L
 

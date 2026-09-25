@@ -1,4 +1,4 @@
-# ForestNavigator architecture — 1.7.2
+# ForestNavigator architecture — 1.7.3
 
 ## Map rendering
 
@@ -52,3 +52,21 @@ The radius is geodesic from the current GPS fix in the four cardinal directions.
 ## Large-region preparation
 
 Expected tile count is computed from tile ranges mathematically. Resume statistics walk only existing PNG files. The downloader no longer probes every theoretical z/x/y path before starting, which avoids the multi-million filesystem-check stall seen with 50 km regions.
+
+
+## Exact offline square v9
+
+Offline schema 9 uses `offline_maps_v9`. Older v8 regions are discarded so their low-zoom background tiles cannot reappear.
+
+The minimum downloaded zoom now scales with selected radius (15/14/13/12/11 for 2/5/10/25/50 km). Offline raster sources expose the same minzoom, so MapLibre does not render a coarse tile far outside the requested region when the user zooms out.
+
+Boundary tiles are clipped to the geodesic square before final storage. Interior tiles are streamed byte-for-byte to disk; only boundary images are decoded/re-encoded as PNG with transparency outside the requested square.
+
+## Throughput v1.7.3
+
+- 64 coroutine tile workers per active region;
+- OkHttp dispatcher: 128 total / 64 per host;
+- connection pool up to 64 idle connections;
+- 64 KiB streaming copy buffer;
+- no per-tile fsync;
+- progress remains throttled to avoid UI/notification overhead.

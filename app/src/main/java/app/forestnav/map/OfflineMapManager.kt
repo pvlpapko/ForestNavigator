@@ -8,6 +8,7 @@ import java.util.Properties
 import kotlin.math.PI
 import kotlin.math.asin
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
@@ -65,6 +66,22 @@ class OfflineMapManager(context: Context) {
         val y: Int,
         val file: File
     )
+
+    data class TileClip(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int
+    ) {
+        fun isFull(
+            width: Int,
+            height: Int
+        ): Boolean =
+            left <= 0 &&
+                top <= 0 &&
+                right >= width &&
+                bottom >= height
+    }
 
     data class OfflineSelection(
         val meta: RegionMeta,
@@ -268,6 +285,7 @@ class OfflineMapManager(context: Context) {
             layer = meta.layer,
             regionId = meta.id,
             regionDirectory = regionDir(meta.id),
+            minDownloadedZoom = meta.minZoom,
             maxDownloadedZoom = meta.maxZoom
         ) ?: return null
 
@@ -276,6 +294,41 @@ class OfflineMapManager(context: Context) {
 
     fun regionDirectory(id: Long): File =
         regionDir(id)
+
+    fun tileClip(
+        meta: RegionMeta,
+        task: TileTask,
+        width: Int = task.source.tileSize,
+        height: Int = task.source.tileSize
+    ): TileClip {
+        val westX = lonToTileXFraction(meta.west, task.z)
+        val eastX = lonToTileXFraction(meta.east, task.z)
+        val northY = latToTileYFraction(meta.north, task.z)
+        val southY = latToTileYFraction(meta.south, task.z)
+
+        val left = ceil(
+            (westX - task.x.toDouble()) * width
+        ).toInt().coerceIn(0, width)
+
+        val right = floor(
+            (eastX - task.x.toDouble()) * width
+        ).toInt().coerceIn(0, width)
+
+        val top = ceil(
+            (northY - task.y.toDouble()) * height
+        ).toInt().coerceIn(0, height)
+
+        val bottom = floor(
+            (southY - task.y.toDouble()) * height
+        ).toInt().coerceIn(0, height)
+
+        return TileClip(
+            left = minOf(left, width - 1),
+            top = minOf(top, height - 1),
+            right = maxOf(right, 1),
+            bottom = maxOf(bottom, 1)
+        )
+    }
 
     private fun saveMeta(meta: RegionMeta) {
         val props = Properties().apply {
@@ -361,13 +414,23 @@ class OfflineMapManager(context: Context) {
     ): IntArray {
         val n = 1 shl z
 
-        val xMin = lonToTileX(meta.west, z)
+        val west = lonToTileXFraction(meta.west, z)
+        val east = lonToTileXFraction(meta.east, z)
+        val north = latToTileYFraction(meta.north, z)
+        val south = latToTileYFraction(meta.south, z)
+
+        // Half-open ranges [west, east) / [north, south) avoid adding an
+        // entire extra tile when the requested square ends exactly on a tile
+        // boundary.
+        val xMin = floor(west)
+            .toInt()
             .coerceIn(0, n - 1)
-        val xMax = lonToTileX(meta.east, z)
+        val xMax = (ceil(east).toInt() - 1)
             .coerceIn(0, n - 1)
-        val yMin = latToTileY(meta.north, z)
+        val yMin = floor(north)
+            .toInt()
             .coerceIn(0, n - 1)
-        val yMax = latToTileY(meta.south, z)
+        val yMax = (ceil(south).toInt() - 1)
             .coerceIn(0, n - 1)
 
         return intArrayOf(
@@ -381,30 +444,46 @@ class OfflineMapManager(context: Context) {
     private fun lonToTileX(
         longitude: Double,
         z: Int
-    ): Int {
-        val n = 1 shl z
-        return floor(
-            (longitude + 180.0) / 360.0 * n
+    ): Int =
+        floor(
+            lonToTileXFraction(longitude, z)
         ).toInt()
+
+    private fun lonToTileXFraction(
+        longitude: Double,
+        z: Int
+    ): Double {
+        val n = (1 shl z).toDouble()
+        return (longitude + 180.0) / 360.0 * n
     }
 
     private fun latToTileY(
         latitude: Double,
         z: Int
-    ): Int {
-        val lat = latitude.coerceIn(-85.05112878, 85.05112878)
-        val latRad = Math.toRadians(lat)
-        val n = 1 shl z
-
-        return floor(
-            (
-                1.0 -
-                    ln(
-                        tan(latRad) +
-                            1.0 / cos(latRad)
-                    ) / PI
-                ) / 2.0 * n
+    ): Int =
+        floor(
+            latToTileYFraction(latitude, z)
         ).toInt()
+
+    private fun latToTileYFraction(
+        latitude: Double,
+        z: Int
+    ): Double {
+        val lat =
+            latitude.coerceIn(
+                -85.05112878,
+                85.05112878
+            )
+        val latRad = Math.toRadians(lat)
+        val n = (1 shl z).toDouble()
+
+        return (
+            1.0 -
+                ln(
+                    tan(latRad) +
+                        1.0 / cos(latRad)
+                ) / PI
+            ) / 2.0 * n
     }
 
     private fun boundsFor(
@@ -489,8 +568,8 @@ class OfflineMapManager(context: Context) {
     }
 
     companion object {
-        private const val SCHEMA = 8
-        private const val ROOT_DIR = "offline_maps_v8"
+        private const val SCHEMA = 9
+        private const val ROOT_DIR = "offline_maps_v9"
         private const val META_FILE = "region.properties"
         private const val MIN_TILE_BYTES = 128L
         private const val EARTH_RADIUS_METERS = 6_371_008.8
@@ -499,6 +578,7 @@ class OfflineMapManager(context: Context) {
             "arcgis_offline_v2",
             "offline_maps_v3",
             "offline_maps_v4",
+            "offline_maps_v8",
             "map_styles_v7"
         )
 

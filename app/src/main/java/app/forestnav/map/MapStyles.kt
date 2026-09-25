@@ -92,6 +92,7 @@ object MapStyles {
         layer: MapLayer,
         regionId: Long,
         regionDirectory: File,
+        minDownloadedZoom: Int,
         maxDownloadedZoom: Int
     ): MapStyleSpec? {
         val sources = tileSources(layer)
@@ -116,7 +117,8 @@ object MapStyles {
                         )
                     )
                 },
-                tileTemplates = templates
+                tileTemplates = templates,
+                minimumZoom = minDownloadedZoom
             )
         )
     }
@@ -156,7 +158,8 @@ object MapStyles {
     private fun buildStyleJson(
         layer: MapLayer,
         sources: List<TileSourceSpec>,
-        tileTemplates: Map<String, String>
+        tileTemplates: Map<String, String>,
+        minimumZoom: Int = 0
     ): String {
         val background =
             if (layer == MapLayer.SATELLITE) "#0d0f0d" else "#d8ded6"
@@ -169,7 +172,7 @@ object MapStyles {
               "type": "raster",
               "tiles": ["$url"],
               "tileSize": ${source.tileSize},
-              "minzoom": 0,
+              "minzoom": $minimumZoom,
               "maxzoom": ${source.nativeMaxZoom}
             }
             """.trimIndent()
@@ -181,7 +184,7 @@ object MapStyles {
                   "id": "osm",
                   "type": "raster",
                   "source": "osm",
-                  "minzoom": 0,
+                  "minzoom": $minimumZoom,
                   "maxzoom": 23
                 }
             """.trimIndent()
@@ -191,14 +194,14 @@ object MapStyles {
                   "id": "imagery",
                   "type": "raster",
                   "source": "imagery",
-                  "minzoom": 0,
+                  "minzoom": $minimumZoom,
                   "maxzoom": 23
                 },
                 {
                   "id": "hybrid-detail",
                   "type": "raster",
                   "source": "hybrid-detail",
-                  "minzoom": 0,
+                  "minzoom": $minimumZoom,
                   "maxzoom": 23
                 }
             """.trimIndent()

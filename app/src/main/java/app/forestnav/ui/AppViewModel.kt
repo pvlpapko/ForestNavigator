@@ -332,9 +332,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val minZoom =
             when {
-                radiusKm >= 50.0 -> 8.0
-                radiusKm >= 25.0 -> 9.0
-                else -> 10.0
+                radiusKm <= 2.0 -> 15.0
+                radiusKm <= 5.0 -> 14.0
+                radiusKm <= 10.0 -> 13.0
+                radiusKm <= 25.0 -> 12.0
+                else -> 11.0
             }
 
         OfflineMapDownloadService.start(
