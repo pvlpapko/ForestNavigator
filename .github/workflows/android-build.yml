@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -104,3 +104,14 @@ jobs:
             app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+
+      - name: Publish direct APK download
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.head_commit.message == 'Publish ForestNavigator 1.6.0 APK' && env.FORESTNAV_KEYSTORE_B64 != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          cp "$APK" "$RUNNER_TEMP/ForestNavigator-1.6.0.apk"
+          gh release create "v1.6.0"             "$RUNNER_TEMP/ForestNavigator-1.6.0.apk#ForestNavigator-1.6.0.apk"             --target "$GITHUB_SHA"             --title "ForestNavigator 1.6.0"             --notes "Open OSM Style + Open Hybrid, direct MapLibre offline downloads, relief modes removed."
