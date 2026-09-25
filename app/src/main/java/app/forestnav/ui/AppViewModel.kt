@@ -330,14 +330,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 MapLayer.SATELLITE -> 18.0
             }
 
-        val minZoom =
-            when {
-                radiusKm <= 2.0 -> 15.0
-                radiusKm <= 5.0 -> 14.0
-                radiusKm <= 10.0 -> 13.0
-                radiusKm <= 25.0 -> 12.0
-                else -> 11.0
-            }
+        // Low zoom levels are tiny in storage compared with zoom 17–18,
+        // but are required so a completed offline region remains visible when
+        // the user zooms out. Boundary clipping in schema v10 keeps these
+        // overview tiles strictly inside the selected square.
+        val minZoom = 8.0
 
         OfflineMapDownloadService.start(
             context = app,

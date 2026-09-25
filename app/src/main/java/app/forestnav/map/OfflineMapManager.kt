@@ -568,8 +568,8 @@ class OfflineMapManager(context: Context) {
     }
 
     companion object {
-        private const val SCHEMA = 9
-        private const val ROOT_DIR = "offline_maps_v9"
+        private const val SCHEMA = 10
+        private const val ROOT_DIR = "offline_maps_v10"
         private const val META_FILE = "region.properties"
         private const val MIN_TILE_BYTES = 128L
         private const val EARTH_RADIUS_METERS = 6_371_008.8
@@ -579,6 +579,7 @@ class OfflineMapManager(context: Context) {
             "offline_maps_v3",
             "offline_maps_v4",
             "offline_maps_v8",
+            "offline_maps_v9",
             "map_styles_v7"
         )
 

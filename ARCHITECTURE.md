@@ -1,4 +1,4 @@
-# ForestNavigator architecture — 1.7.3
+# ForestNavigator architecture — 1.7.4
 
 ## Map rendering
 
@@ -70,3 +70,12 @@ Boundary tiles are clipped to the geodesic square before final storage. Interior
 - 64 KiB streaming copy buffer;
 - no per-tile fsync;
 - progress remains throttled to avoid UI/notification overhead.
+
+
+## Offline overview levels v10
+
+Schema 10 stores every region from zoom 8 through its configured max zoom. The low levels add very few tiles relative to zoom 17–18 but prevent the raster source from disappearing when the camera zooms out.
+
+Exact-square clipping remains active for every boundary tile at every zoom. Thus overview tiles are transparent outside the geodesic region instead of painting a large coarse rectangle around it.
+
+v9 regions are invalidated on upgrade because they were created without the missing overview levels and cannot be repaired by style metadata alone.

@@ -79,7 +79,7 @@ object MapStyles {
         if (sources.isEmpty()) return null
 
         return MapStyleSpec(
-            key = "online-v8-${layer.name}",
+            key = "online-v10-${layer.name}",
             json = buildStyleJson(
                 layer = layer,
                 sources = sources,
@@ -106,7 +106,7 @@ object MapStyles {
         }
 
         return MapStyleSpec(
-            key = "offline-v8-$regionId-${layer.name}",
+            key = "offline-v10-$regionId-${layer.name}",
             json = buildStyleJson(
                 layer = layer,
                 sources = sources.map {
@@ -125,7 +125,7 @@ object MapStyles {
 
     fun emptyStyle(layer: MapLayer): MapStyleSpec =
         MapStyleSpec(
-            key = "empty-v8-${layer.name}",
+            key = "empty-v10-${layer.name}",
             json = """
                 {
                   "version": 8,
