@@ -614,7 +614,6 @@ private fun updateMeasurementAnnotations(
                             label
                         )
                     )
-                    .anchor(0.5f, 0.5f)
                     .title(label)
             )
     }
