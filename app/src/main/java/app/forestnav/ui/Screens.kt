@@ -58,6 +58,7 @@ fun MapScreen(
     }
     var selectedMapWaypoint by remember { mutableStateOf<Waypoint?>(null) }
     var mapScaleMeters by remember { mutableDoubleStateOf(0.0) }
+    var showExitConfirmation by remember { mutableStateOf(false) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val short = maxHeight < 560.dp
@@ -101,32 +102,35 @@ fun MapScreen(
                         )
                     }
 
-                    FilledTonalButton(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
-                        onClick = onExit,
-                        contentPadding =
-                            PaddingValues(horizontal = 6.dp),
+                    FilterChip(
+                        modifier = Modifier.weight(1f),
+                        selected = false,
+                        onClick = {
+                            showExitConfirmation = true
+                        },
+                        label = {
+                            Text(
+                                "Закрыть",
+                                maxLines = 1
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.PowerSettingsNew,
+                                contentDescription =
+                                    "Закрыть приложение"
+                            )
+                        },
                         colors =
-                            ButtonDefaults.filledTonalButtonColors(
+                            FilterChipDefaults.filterChipColors(
                                 containerColor =
                                     MaterialTheme.colorScheme.errorContainer,
-                                contentColor =
+                                labelColor =
+                                    MaterialTheme.colorScheme.onErrorContainer,
+                                iconColor =
                                     MaterialTheme.colorScheme.onErrorContainer
                             )
-                    ) {
-                        Icon(
-                            Icons.Default.PowerSettingsNew,
-                            contentDescription =
-                                "Закрыть приложение"
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "Закрыть",
-                            maxLines = 1
-                        )
-                    }
+                    )
                 }
 
                 Text(
@@ -400,6 +404,54 @@ fun MapScreen(
                 }
             }
         }
+    }
+
+    if (showExitConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                showExitConfirmation = false
+            },
+            icon = {
+                Icon(
+                    Icons.Default.PowerSettingsNew,
+                    contentDescription = null
+                )
+            },
+            title = {
+                Text("Закрыть приложение?")
+            },
+            text = {
+                Text(
+                    "Будут остановлены запись трека, GPS/компас и текущие процессы загрузки карт."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showExitConfirmation = false
+                        onExit()
+                    },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.error,
+                            contentColor =
+                                MaterialTheme.colorScheme.onError
+                        )
+                ) {
+                    Text("Закрыть")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showExitConfirmation = false
+                    }
+                ) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 
     pendingMapPoint?.let { point ->
