@@ -114,3 +114,18 @@ The downloader no longer uses fixed constants for 64 workers / 128 total HTTP ca
 35% of the app heap is available to active download work using a conservative per-request memory estimate. The file-descriptor budget reserves descriptors for SQLite, MapLibre, notifications and Android internals, then divides the remainder by the expected descriptors per active request. The lower of the heap and FD budgets becomes the automatic parallelism.
 
 Workers run on Dispatchers.IO.limitedParallelism(automaticParallelism). The same value configures OkHttp maxRequests, maxRequestsPerHost and the connection pool. There is no fixed performance ceiling; only resource-derived protection against OOM/EMFILE process death.
+
+
+## 1.8.4 offline-first rendering
+
+When the current GPS fix is inside a completed offline region for the selected MapLayer, ForestMapView always selects an offline-first composite style regardless of ConnectivityManager state.
+
+Each provider source is represented twice:
+1. a local file:// raster source rendered first;
+2. the corresponding remote raster source rendered above it.
+
+Local layers use zero raster fade and therefore paint as soon as MapLibre reads the downloaded tile. Remote layers may request in parallel; until a remote tile exists, the local layer beneath remains visible. As remote tiles arrive they naturally replace the same screen area without a full style swap. Connectivity state changes therefore do not invalidate or rebuild a valid local map.
+
+If no completed region covers the current GPS fix, the previous behavior remains: validated internet uses the online style and no internet uses the empty style.
+
+Waypoint deletion is UI-confirmed before AppViewModel.deleteWaypoint() is invoked.

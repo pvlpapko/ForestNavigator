@@ -123,6 +123,169 @@ object MapStyles {
         )
     }
 
+    fun offlineFirstStyle(
+        layer: MapLayer,
+        regionId: Long,
+        regionDirectory: File,
+        minDownloadedZoom: Int,
+        maxDownloadedZoom: Int
+    ): MapStyleSpec? {
+        val sources = tileSources(layer)
+        if (sources.isEmpty()) return null
+
+        val localTemplates =
+            sources.associate { source ->
+                val sourceDir =
+                    File(
+                        regionDirectory,
+                        source.id
+                    )
+
+                source.id to
+                    "file://${sourceDir.absolutePath}/{z}/{x}/{y}.png"
+            }
+
+        val sourceJson =
+            sources.flatMap { source ->
+                val localUrl =
+                    localTemplates[source.id]
+                        ?: error(
+                            "Missing local template for ${source.id}"
+                        )
+
+                val localMax =
+                    minOf(
+                        source.nativeMaxZoom,
+                        maxDownloadedZoom
+                    )
+
+                listOf(
+                    """
+                    "local-${source.id}": {
+                      "type": "raster",
+                      "tiles": ["$localUrl"],
+                      "tileSize": ${source.tileSize},
+                      "minzoom": $minDownloadedZoom,
+                      "maxzoom": $localMax
+                    }
+                    """.trimIndent(),
+                    """
+                    "remote-${source.id}": {
+                      "type": "raster",
+                      "tiles": ["${source.urlTemplate}"],
+                      "tileSize": ${source.tileSize},
+                      "minzoom": 0,
+                      "maxzoom": ${source.nativeMaxZoom}
+                    }
+                    """.trimIndent()
+                )
+            }.joinToString(",")
+
+        val layerJson =
+            when (layer) {
+                MapLayer.MAP -> {
+                    """
+                    {
+                      "id": "local-osm",
+                      "type": "raster",
+                      "source": "local-osm",
+                      "minzoom": $minDownloadedZoom,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 0
+                      }
+                    },
+                    {
+                      "id": "remote-osm",
+                      "type": "raster",
+                      "source": "remote-osm",
+                      "minzoom": 0,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 120
+                      }
+                    }
+                    """.trimIndent()
+                }
+
+                MapLayer.SATELLITE -> {
+                    """
+                    {
+                      "id": "local-imagery",
+                      "type": "raster",
+                      "source": "local-imagery",
+                      "minzoom": $minDownloadedZoom,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 0
+                      }
+                    },
+                    {
+                      "id": "remote-imagery",
+                      "type": "raster",
+                      "source": "remote-imagery",
+                      "minzoom": 0,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 120
+                      }
+                    },
+                    {
+                      "id": "local-hybrid-detail",
+                      "type": "raster",
+                      "source": "local-hybrid-detail",
+                      "minzoom": $minDownloadedZoom,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 0
+                      }
+                    },
+                    {
+                      "id": "remote-hybrid-detail",
+                      "type": "raster",
+                      "source": "remote-hybrid-detail",
+                      "minzoom": 0,
+                      "maxzoom": 23,
+                      "paint": {
+                        "raster-fade-duration": 120
+                      }
+                    }
+                    """.trimIndent()
+                }
+            }
+
+        val background =
+            if (layer == MapLayer.SATELLITE) {
+                "#0d0f0d"
+            } else {
+                "#d8ded6"
+            }
+
+        return MapStyleSpec(
+            key =
+                "offline-first-v1-$regionId-${layer.name}",
+            json = """
+                {
+                  "version": 8,
+                  "name": "ForestNavigator Offline First ${layer.title}",
+                  "sources": {
+                    $sourceJson
+                  },
+                  "layers": [
+                    {
+                      "id": "background",
+                      "type": "background",
+                      "paint": {
+                        "background-color": "$background"
+                      }
+                    },
+                    $layerJson
+                  ]
+                }
+            """.trimIndent()
+        )
+    }
+
     fun emptyStyle(layer: MapLayer): MapStyleSpec =
         MapStyleSpec(
             key = "empty-v10-${layer.name}",

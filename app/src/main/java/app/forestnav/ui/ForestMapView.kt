@@ -106,16 +106,41 @@ fun ForestMapView(
     val currentScaleCallback = rememberUpdatedState(onMapScaleChanged)
 
     val offlineManager = remember { OfflineMapManager(context) }
-    val styleSpec = if (online) {
-        MapStyles.onlineStyle(layer)
-            ?: MapStyles.emptyStyle(layer)
-    } else {
+
+    val offlineSelection =
         offlineManager.selectionFor(
             layer = layer,
             latitude = location.latitude,
             longitude = location.longitude
-        )?.style ?: MapStyles.emptyStyle(layer)
-    }
+        )
+
+    val styleSpec =
+        when {
+            offlineSelection != null -> {
+                MapStyles.offlineFirstStyle(
+                    layer = layer,
+                    regionId =
+                        offlineSelection.meta.id,
+                    regionDirectory =
+                        offlineManager.regionDirectory(
+                            offlineSelection.meta.id
+                        ),
+                    minDownloadedZoom =
+                        offlineSelection.meta.minZoom,
+                    maxDownloadedZoom =
+                        offlineSelection.meta.maxZoom
+                ) ?: offlineSelection.style
+            }
+
+            online -> {
+                MapStyles.onlineStyle(layer)
+                    ?: MapStyles.emptyStyle(layer)
+            }
+
+            else -> {
+                MapStyles.emptyStyle(layer)
+            }
+        }
     val styleKey = styleSpec.key
     val styleJson = styleSpec.json
 

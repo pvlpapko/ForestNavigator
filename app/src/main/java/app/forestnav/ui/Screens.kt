@@ -743,6 +743,9 @@ private fun MapPointDialog(
 fun PointsScreen(vm: AppViewModel) {
     val points by vm.waypoints.collectAsState()
     val target by vm.navigationTarget.collectAsState()
+    var pendingDelete by remember {
+        mutableStateOf<Waypoint?>(null)
+    }
 
     if (points.isEmpty()) {
         EmptyState(
@@ -808,8 +811,15 @@ fun PointsScreen(vm: AppViewModel) {
                             Text(if (target?.id == p.id) "Отменить" else "К точке")
                         }
 
-                        TextButton(onClick = { vm.deleteWaypoint(p.id) }) {
-                            Icon(Icons.Default.DeleteOutline, null)
+                        TextButton(
+                            onClick = {
+                                pendingDelete = p
+                            }
+                        ) {
+                            Icon(
+                                Icons.Default.DeleteOutline,
+                                null
+                            )
                             Spacer(Modifier.width(4.dp))
                             Text("Удалить")
                         }
@@ -817,6 +827,54 @@ fun PointsScreen(vm: AppViewModel) {
                 }
             }
         }
+    }
+
+    pendingDelete?.let { point ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingDelete = null
+            },
+            icon = {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = null
+                )
+            },
+            title = {
+                Text("Удалить точку?")
+            },
+            text = {
+                Text(
+                    "Точка «${point.name}» будет удалена без возможности восстановления."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.deleteWaypoint(point.id)
+                        pendingDelete = null
+                    },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.error,
+                            contentColor =
+                                MaterialTheme.colorScheme.onError
+                        )
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                    }
+                ) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
 
