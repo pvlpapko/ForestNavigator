@@ -10,13 +10,11 @@ import android.content.pm.ServiceInfo
 import android.location.Location
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import app.forestnav.ForestNavApplication
 import app.forestnav.MainActivity
 import app.forestnav.data.TrackPoint
-import app.forestnav.gnss.GnssEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -57,11 +55,9 @@ object TrackRecordingState {
 }
 
 class TrackRecordingService : Service() {
-    private lateinit var gnss: GnssEngine
     private var trackId: Long = -1L
     private var lastAccepted: Location? = null
     private var collectorThread: Thread? = null
-    private var wakeLock: PowerManager.WakeLock? = null
 
     @Volatile
     private var collecting = false
@@ -73,7 +69,6 @@ class TrackRecordingService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        gnss = GnssEngine(this)
     }
 
     override fun onStartCommand(
@@ -200,28 +195,16 @@ class TrackRecordingService : Service() {
             fgsType
         )
 
-        val powerManager =
-            getSystemService(PowerManager::class.java)
-
-        wakeLock =
-            powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "ForestNavigator:TrackRecording"
-            ).apply {
-                setReferenceCounted(false)
-                if (!isHeld) {
-                    acquire()
-                }
-            }
-
-        gnss.start(GnssEngine.PowerMode.NORMAL)
+        LocationTrackingService.start(this)
 
         collectorThread = Thread {
             var seenElapsedNs = Long.MIN_VALUE
             var seenTime = 0L
 
             while (collecting) {
-                val loc = gnss.location.value
+                val loc =
+                    LocationTrackingState
+                        .location.value
 
                 if (loc != null) {
                     val newSample =
@@ -321,13 +304,6 @@ class TrackRecordingService : Service() {
         collecting = false
         collectorThread?.interrupt()
         collectorThread = null
-        gnss.stop()
-        wakeLock?.let { lock ->
-            if (lock.isHeld) {
-                lock.release()
-            }
-        }
-        wakeLock = null
 
         if (trackId >= 0L) {
             runCatching {
@@ -352,13 +328,6 @@ class TrackRecordingService : Service() {
         collecting = false
         collectorThread?.interrupt()
         collectorThread = null
-        gnss.stop()
-        wakeLock?.let { lock ->
-            if (lock.isHeld) {
-                lock.release()
-            }
-        }
-        wakeLock = null
         TrackRecordingState.setRecording(false)
         super.onDestroy()
     }

@@ -147,3 +147,18 @@ OfflineMapManager persists deleted region IDs before filesystem cleanup. allMeta
 deleteRecursively() is therefore physical cleanup only. If it cannot remove every tile immediately, the tombstone remains durable and cleanupLegacyFiles() retries later. The ViewModel optimistically removes the completed region from StateFlow before IO cleanup begins.
 
 The Offline UI requires explicit confirmation before deleting a completed map region.
+
+
+## 1.8.7 persistent location architecture
+
+LocationTrackingService is the sole owner of GnssEngine. It is a START_STICKY location foreground service started while MainActivity is foreground and fine-location permission is granted. The service owns a PARTIAL_WAKE_LOCK and persists an enabled flag so screen-off/background lifecycle transitions do not tear down GNSS acquisition.
+
+LocationTrackingState exposes location, raw GPS location, satellite counts and service state to the UI and track recorder.
+
+AppViewModel no longer constructs GnssEngine. Activity pause stops only the compass; GPS remains owned by the service. Precise waypoint collection temporarily switches the service to PRECISION mode and consumes the shared raw GPS flow.
+
+TrackRecordingService consumes LocationTrackingState.location instead of starting a second LocationManager subscription.
+
+GnssEngine startup now treats GPS registration as mandatory even when NETWORK_PROVIDER succeeds. If GPS requestLocationUpdates fails transiently, it retries rather than short-circuiting on the network provider. The first GPS fix after a network/cached bootstrap bypasses display smoothing so the true GNSS position becomes authoritative immediately.
+
+The location notification exposes an explicit full-exit action. Full exit stops track recording and offline downloads, releases the location wake lock, removes the foreground notification and terminates the app process.

@@ -12,11 +12,12 @@ import app.forestnav.data.TrackSummary
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.gnss.CompassEngine
-import app.forestnav.gnss.GnssEngine
 import app.forestnav.gnss.PreciseFixCollector
 import app.forestnav.map.MapLayer
 import app.forestnav.map.OfflineMapManager
 import app.forestnav.service.OfflineMapDownloadService
+import app.forestnav.service.LocationTrackingService
+import app.forestnav.service.LocationTrackingState
 import app.forestnav.service.OfflineMapDownloadState
 import app.forestnav.service.TrackRecordingState
 import kotlinx.coroutines.Dispatchers
@@ -38,13 +39,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val connectivity =
         application.getSystemService(ConnectivityManager::class.java)
 
-    val gnss = GnssEngine(application)
     val compass = CompassEngine(application)
 
     private val offline = OfflineMapManager(application)
 
-    val location = gnss.location
-    val satellites = gnss.satellites
+    val location = LocationTrackingState.location
+    val satellites = LocationTrackingState.satellites
     val heading = compass.heading
     val downloads = OfflineMapDownloadState.progress
 
@@ -97,7 +97,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var preciseJob: Job? = null
     private var connectivityRefreshJob: Job? = null
-    private var foregroundActive = false
 
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
@@ -154,18 +153,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startForegroundSensors() {
-        foregroundActive = true
-        gnss.start(GnssEngine.PowerMode.NORMAL)
+        LocationTrackingService.start(app)
         compass.start()
     }
 
     fun stopForegroundSensors() {
-        foregroundActive = false
+        // The foreground location service owns GPS and intentionally keeps
+        // running while the Activity is backgrounded or the screen is locked.
         compass.stop()
-
-        if (!_preciseState.value.active) {
-            gnss.stop()
-        }
     }
 
     fun setLayer(layer: MapLayer) {
@@ -250,10 +245,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 label = name
             )
 
-        gnss.start(GnssEngine.PowerMode.PRECISION)
+        LocationTrackingService.setPrecision(
+            app,
+            true
+        )
 
         preciseJob = viewModelScope.launch {
-            gnss.rawLocation.collectLatest { raw ->
+            LocationTrackingState.rawLocation.collectLatest { raw ->
                 if (raw == null) return@collectLatest
 
                 val result = collector.add(raw)
@@ -439,11 +437,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun restoreNormalGnssMode() {
-        if (foregroundActive) {
-            gnss.start(GnssEngine.PowerMode.NORMAL)
-        } else {
-            gnss.stop()
-        }
+        LocationTrackingService.setPrecision(
+            app,
+            false
+        )
     }
 
     private fun scheduleConnectivityRefresh(
@@ -486,7 +483,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         connectivityRefreshJob?.cancel()
         preciseJob?.cancel()
-        gnss.stop()
         compass.stop()
 
         super.onCleared()

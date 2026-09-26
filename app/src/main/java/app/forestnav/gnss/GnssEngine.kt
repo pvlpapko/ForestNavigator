@@ -132,7 +132,13 @@ class GnssEngine(private val context: Context) : LocationListener {
     ) {
         if (desiredMode == null) return
         if (!hasFinePermission()) return
-        if (started && powerMode == mode) return
+        if (
+            started &&
+            powerMode == mode &&
+            gpsRegistered
+        ) {
+            return
+        }
 
         if (started) {
             stopInternal(clearUiLater = false)
@@ -186,6 +192,19 @@ class GnssEngine(private val context: Context) : LocationListener {
                 )
             }
             return
+        }
+
+        // Network provider success must not hide a failed GPS registration.
+        // Retry until the actual GPS listener is registered too.
+        if (
+            !gpsRegistered &&
+            desiredMode != null &&
+            hasFinePermission()
+        ) {
+            mainHandler.postDelayed(
+                retryStartRunnable,
+                START_RETRY_DELAY_MS
+            )
         }
 
         statusRegistered =
@@ -372,7 +391,14 @@ class GnssEngine(private val context: Context) : LocationListener {
                 lastGpsFixElapsedRealtimeMs =
                     SystemClock.elapsedRealtime()
 
-                acceptDisplayLocation(raw)
+                acceptDisplayLocation(
+                    raw,
+                    force =
+                        lastStableLocation
+                            ?.provider !=
+                            LocationManager
+                                .GPS_PROVIDER
+                )
             }
 
             LocationManager.NETWORK_PROVIDER -> {

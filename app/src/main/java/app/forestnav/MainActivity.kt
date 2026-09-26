@@ -4,9 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.os.Process
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -19,8 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import app.forestnav.service.OfflineMapDownloadService
-import app.forestnav.service.TrackRecordingService
+import app.forestnav.service.LocationTrackingService
 import app.forestnav.ui.AppViewModel
 import app.forestnav.ui.ForestNavRoot
 
@@ -122,18 +118,8 @@ class MainActivity : ComponentActivity() {
         ).show()
 
         vm.stopForegroundSensors()
-        TrackRecordingService.stop(this)
-        OfflineMapDownloadService.stopAll(this)
-
         finishAndRemoveTask()
-
-        Handler(Looper.getMainLooper())
-            .postDelayed(
-                {
-                    Process.killProcess(Process.myPid())
-                },
-                PROCESS_EXIT_DELAY_MS
-            )
+        LocationTrackingService.exitApp(this)
     }
 
     private fun hasFineLocation() =
@@ -178,7 +164,5 @@ class MainActivity : ComponentActivity() {
         private const val BACK_EXIT_WINDOW_MS =
             2_000L
 
-        private const val PROCESS_EXIT_DELAY_MS =
-            700L
     }
 }
