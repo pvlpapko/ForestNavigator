@@ -28,12 +28,27 @@ object TrackRecordingState {
         MutableStateFlow<List<TrackPoint>>(emptyList())
     val points = _points.asStateFlow()
 
+    private val _trackId =
+        MutableStateFlow<Long?>(null)
+    val trackId = _trackId.asStateFlow()
+
     internal fun setRecording(value: Boolean) {
         _recording.value = value
     }
 
     internal fun replacePoints(points: List<TrackPoint>) {
         _points.value = points
+    }
+
+    internal fun setTrackId(value: Long?) {
+        _trackId.value = value
+    }
+
+    internal fun clearIfTrack(trackId: Long) {
+        if (_trackId.value == trackId) {
+            _points.value = emptyList()
+            _trackId.value = null
+        }
     }
 
     internal fun append(point: TrackPoint) {
@@ -103,6 +118,7 @@ class TrackRecordingService : Service() {
 
         lastAccepted = null
         collecting = true
+        TrackRecordingState.setTrackId(trackId)
         TrackRecordingState.setRecording(true)
 
         Thread {

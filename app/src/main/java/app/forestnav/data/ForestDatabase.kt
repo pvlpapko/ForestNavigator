@@ -141,6 +141,26 @@ class ForestDatabase(context: Context) : SQLiteOpenHelper(context, "forestnav.db
         return out
     }
 
+    fun deleteTrack(trackId: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete(
+                "track_points",
+                "track_id=?",
+                arrayOf(trackId.toString())
+            )
+            db.delete(
+                "tracks",
+                "id=?",
+                arrayOf(trackId.toString())
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun trackPoints(trackId: Long): List<TrackPoint> {
         val out = mutableListOf<TrackPoint>()
         readableDatabase.query("track_points", null, "track_id=?", arrayOf(trackId.toString()), null, null, "time ASC").use { c ->

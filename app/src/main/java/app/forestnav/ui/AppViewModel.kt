@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.forestnav.ForestNavApplication
+import app.forestnav.data.TrackSummary
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.gnss.CompassEngine
@@ -17,6 +18,7 @@ import app.forestnav.map.MapLayer
 import app.forestnav.map.OfflineMapManager
 import app.forestnav.service.OfflineMapDownloadService
 import app.forestnav.service.OfflineMapDownloadState
+import app.forestnav.service.TrackRecordingState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -75,6 +77,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val offlineRegions =
         _offlineRegions.asStateFlow()
 
+    private val _tracks =
+        MutableStateFlow<List<TrackSummary>>(emptyList())
+    val tracks: StateFlow<List<TrackSummary>> =
+        _tracks.asStateFlow()
+
     data class PreciseState(
         val active: Boolean = false,
         val samples: Int = 0,
@@ -124,6 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             offline.cleanupLegacyFiles()
             refreshWaypointsInternal()
             refreshOfflineRegionsInternal()
+            refreshTracksInternal()
         }
         OfflineMapDownloadService.restore(app)
 
@@ -311,6 +319,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshTracks() {
+        viewModelScope.launch(Dispatchers.IO) {
+            refreshTracksInternal()
+        }
+    }
+
+    fun deleteTrack(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.database.deleteTrack(id)
+            TrackRecordingState.clearIfTrack(id)
+            refreshTracksInternal()
+        }
+    }
+
     fun downloadCurrentRegion(radiusKm: Double) {
         val current: Location =
             location.value ?: return
@@ -393,6 +415,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshWaypointsInternal() {
         _waypoints.value =
             app.database.listWaypoints()
+    }
+
+    private fun refreshTracksInternal() {
+        _tracks.value =
+            app.database.listTracks()
     }
 
     private fun refreshOfflineRegionsInternal() {

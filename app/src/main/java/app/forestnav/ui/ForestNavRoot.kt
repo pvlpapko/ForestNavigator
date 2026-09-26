@@ -12,12 +12,18 @@ import androidx.compose.ui.unit.dp
 enum class Screen(val title: String, val icon: ImageVector) {
     MAP("Карта", Icons.Default.Map),
     POINTS("Точки", Icons.Default.Place),
+    TRACKS("Трек", Icons.Default.Route),
     COMPASS("Компас", Icons.Default.Explore),
     MORE("Ещё", Icons.Default.MoreHoriz)
 }
 
 @Composable
-fun ForestNavRoot(vm: AppViewModel, hasFineLocation: Boolean, requestPermissions: () -> Unit) {
+fun ForestNavRoot(
+    vm: AppViewModel,
+    hasFineLocation: Boolean,
+    requestPermissions: () -> Unit,
+    exitApp: () -> Unit
+) {
     ForestTheme {
         var screen by remember { mutableStateOf(Screen.MAP) }
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -36,7 +42,13 @@ fun ForestNavRoot(vm: AppViewModel, hasFineLocation: Boolean, requestPermissions
                         }
                     }
                     Surface(Modifier.weight(1f)) {
-                        ScreenContent(screen, vm, hasFineLocation, requestPermissions)
+                        ScreenContent(
+                            screen,
+                            vm,
+                            hasFineLocation,
+                            requestPermissions,
+                            exitApp
+                        )
                     }
                 }
             } else {
@@ -56,7 +68,13 @@ fun ForestNavRoot(vm: AppViewModel, hasFineLocation: Boolean, requestPermissions
                     }
                 ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
-                        ScreenContent(screen, vm, hasFineLocation, requestPermissions)
+                        ScreenContent(
+                            screen,
+                            vm,
+                            hasFineLocation,
+                            requestPermissions,
+                            exitApp
+                        )
                     }
                 }
             }
@@ -65,14 +83,21 @@ fun ForestNavRoot(vm: AppViewModel, hasFineLocation: Boolean, requestPermissions
 }
 
 @Composable
-private fun ScreenContent(screen: Screen, vm: AppViewModel, hasFineLocation: Boolean, requestPermissions: () -> Unit) {
+private fun ScreenContent(
+    screen: Screen,
+    vm: AppViewModel,
+    hasFineLocation: Boolean,
+    requestPermissions: () -> Unit,
+    exitApp: () -> Unit
+) {
     if (!hasFineLocation) {
         PermissionScreen(requestPermissions)
         return
     }
     when (screen) {
-        Screen.MAP -> MapScreen(vm)
+        Screen.MAP -> MapScreen(vm, exitApp)
         Screen.POINTS -> PointsScreen(vm)
+        Screen.TRACKS -> TracksScreen(vm)
         Screen.COMPASS -> CompassScreen(vm)
         Screen.MORE -> MoreScreen(vm)
     }

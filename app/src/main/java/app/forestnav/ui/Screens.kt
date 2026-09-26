@@ -34,7 +34,10 @@ import app.forestnav.util.Geo
 import kotlin.math.roundToInt
 
 @Composable
-fun MapScreen(vm: AppViewModel) {
+fun MapScreen(
+    vm: AppViewModel,
+    onExit: () -> Unit
+) {
     val location by vm.location.collectAsState()
     val satellites by vm.satellites.collectAsState()
     val waypoints by vm.waypoints.collectAsState()
@@ -67,19 +70,61 @@ fun MapScreen(vm: AppViewModel) {
                     .padding(horizontal = 10.dp, vertical = if (short) 4.dp else 8.dp)
             ) {
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(8.dp),
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
                     MapLayer.entries.forEach { item ->
                         FilterChip(
+                            modifier = Modifier.weight(1f),
                             selected = layer == item,
                             onClick = { vm.setLayer(item) },
-                            label = { Text(item.title) },
-                            leadingIcon = if (layer == item) {
-                                { Icon(Icons.Default.Check, contentDescription = null) }
-                            } else null
+                            label = {
+                                Text(
+                                    item.title,
+                                    maxLines = 1
+                                )
+                            },
+                            leadingIcon =
+                                if (layer == item) {
+                                    {
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = null
+                                        )
+                                    }
+                                } else {
+                                    null
+                                }
+                        )
+                    }
+
+                    FilledTonalButton(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        onClick = onExit,
+                        contentPadding =
+                            PaddingValues(horizontal = 6.dp),
+                        colors =
+                            ButtonDefaults.filledTonalButtonColors(
+                                containerColor =
+                                    MaterialTheme.colorScheme.errorContainer,
+                                contentColor =
+                                    MaterialTheme.colorScheme.onErrorContainer
+                            )
+                    ) {
+                        Icon(
+                            Icons.Default.PowerSettingsNew,
+                            contentDescription =
+                                "Закрыть приложение"
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Закрыть",
+                            maxLines = 1
                         )
                     }
                 }
@@ -266,37 +311,26 @@ fun MapScreen(vm: AppViewModel) {
                             )
                             TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
                         } else {
-                            if (measurementMode) {
+                            if (
+                                measurementMode &&
+                                measurementPoints.size < 2
+                            ) {
                                 val measureText =
-                                    when (measurementPoints.size) {
-                                        0 ->
-                                            "Линейка: коснитесь карты — точка A"
-
-                                        1 ->
-                                            "Линейка: поставьте точку B"
-
-                                        else -> {
-                                            val a = measurementPoints[0]
-                                            val b = measurementPoints[1]
-                                            val distance = Geo.distanceMeters(
-                                                a.first,
-                                                a.second,
-                                                b.first,
-                                                b.second
-                                            )
-                                            "Расстояние A–B: " +
-                                                Geo.distanceLabel(distance) +
-                                                " • новый тап начнёт новое измерение"
-                                        }
+                                    if (measurementPoints.isEmpty()) {
+                                        "Линейка: коснитесь карты — точка A"
+                                    } else {
+                                        "Линейка: поставьте точку B"
                                     }
 
                                 Text(
                                     measureText,
                                     modifier = Modifier.fillMaxWidth(),
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style =
+                                        MaterialTheme.typography.labelSmall,
                                     textAlign =
                                         androidx.compose.ui.text.style.TextAlign.Center,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color =
+                                        MaterialTheme.colorScheme.onSurface
                                 )
                             }
 
@@ -724,6 +758,161 @@ fun PointsScreen(vm: AppViewModel) {
 
                         TextButton(onClick = { vm.deleteWaypoint(p.id) }) {
                             Icon(Icons.Default.DeleteOutline, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Удалить")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TracksScreen(vm: AppViewModel) {
+    val tracks by vm.tracks.collectAsState()
+    val recording by
+        TrackRecordingState.recording.collectAsState()
+    val activeTrackId by
+        TrackRecordingState.trackId.collectAsState()
+    val context =
+        androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(recording, activeTrackId) {
+        vm.refreshTracks()
+    }
+
+    if (tracks.isEmpty()) {
+        EmptyState(
+            Icons.Default.Route,
+            "Записанных треков пока нет",
+            "Нажми «Трек» на карте. Пройденный путь будет записываться и рисоваться поверх обычной карты или спутника."
+        )
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement =
+            Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(
+                "Записанные треки",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Text(
+                "Треки хранятся отдельно от офлайн-карт. Их можно удалять здесь.",
+                style = MaterialTheme.typography.bodySmall,
+                color =
+                    MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        items(
+            tracks,
+            key = { it.id }
+        ) { track ->
+            val isActive =
+                recording &&
+                    activeTrackId == track.id
+
+            ElevatedCard(
+                Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Route,
+                            contentDescription = null,
+                            tint =
+                                if (isActive) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                        )
+                        Spacer(Modifier.width(8.dp))
+
+                        Column(
+                            Modifier.weight(1f)
+                        ) {
+                            Text(
+                                track.name,
+                                fontWeight =
+                                    FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow =
+                                    TextOverflow.Ellipsis
+                            )
+
+                            val started =
+                                java.text.SimpleDateFormat(
+                                    "dd.MM.yyyy HH:mm",
+                                    java.util.Locale.getDefault()
+                                ).format(
+                                    java.util.Date(
+                                        track.startedAt
+                                    )
+                                )
+
+                            Text(
+                                "$started • ${track.pointCount} точек",
+                                style =
+                                    MaterialTheme.typography.bodySmall
+                            )
+                        }
+
+                        if (isActive) {
+                            AssistChip(
+                                onClick = {},
+                                label = {
+                                    Text("Записывается")
+                                }
+                            )
+                        }
+                    }
+
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement.End
+                    ) {
+                        if (isActive) {
+                            TextButton(
+                                onClick = {
+                                    TrackRecordingService.stop(
+                                        context
+                                    )
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.Stop,
+                                    contentDescription = null
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Остановить")
+                            }
+                        }
+
+                        TextButton(
+                            onClick = {
+                                vm.deleteTrack(track.id)
+                            },
+                            enabled = !isActive
+                        ) {
+                            Icon(
+                                Icons.Default.DeleteOutline,
+                                contentDescription = null
+                            )
                             Spacer(Modifier.width(4.dp))
                             Text("Удалить")
                         }

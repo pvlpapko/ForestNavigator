@@ -26,17 +26,32 @@ import app.forestnav.ui.ForestNavRoot
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
-    private var fineLocationGranted by mutableStateOf(false)
-    private var lastBackPressAt = 0L
+    private var fineLocationGranted by
+        mutableStateOf(false)
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        fineLocationGranted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || hasFineLocation()
-        if (fineLocationGranted) {
-            vm.startForegroundSensors()
-            requestNotificationPermissionIfNeeded()
+    private var lastBackPressAt = 0L
+    private var exitRequested = false
+
+    private val permissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { result ->
+            fineLocationGranted =
+                result[
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ] == true || hasFineLocation()
+
+            if (fineLocationGranted) {
+                vm.startForegroundSensors()
+                requestNotificationPermissionIfNeeded()
+            }
         }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        enableEdgeToEdge()
+        fineLocationGranted = hasFineLocation()
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -46,52 +61,63 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
-    }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        fineLocationGranted = hasFineLocation()
         setContent {
             ForestNavRoot(
                 vm = vm,
                 hasFineLocation = fineLocationGranted,
-                requestPermissions = ::requestPermissions
+                requestPermissions = ::requestPermissions,
+                exitApp = ::requestFullExit
             )
-        }
-        if (fineLocationGranted) {
-            vm.startForegroundSensors()
-            requestNotificationPermissionIfNeeded()
         }
     }
 
     override fun onResume() {
         super.onResume()
+
         fineLocationGranted = hasFineLocation()
-        if (fineLocationGranted) vm.startForegroundSensors()
+
+        if (fineLocationGranted && !exitRequested) {
+            vm.startForegroundSensors()
+            requestNotificationPermissionIfNeeded()
+        }
     }
 
     override fun onPause() {
-        vm.stopForegroundSensors()
+        if (!exitRequested) {
+            vm.stopForegroundSensors()
+        }
         super.onPause()
     }
 
     private fun handleDoubleBackExit() {
         val now = SystemClock.elapsedRealtime()
 
-        if (now - lastBackPressAt > BACK_EXIT_WINDOW_MS) {
+        if (
+            now - lastBackPressAt >
+            BACK_EXIT_WINDOW_MS
+        ) {
             lastBackPressAt = now
+
             Toast.makeText(
                 this,
                 "Нажмите «Назад» ещё раз, чтобы закрыть приложение",
                 Toast.LENGTH_SHORT
             ).show()
+
             return
         }
 
+        requestFullExit()
+    }
+
+    private fun requestFullExit() {
+        if (exitRequested) return
+        exitRequested = true
+
         Toast.makeText(
             this,
-            "Лес Навигатор закрыт",
+            "Останавливаем процессы и закрываем Лес Навигатор",
             Toast.LENGTH_SHORT
         ).show()
 
@@ -110,16 +136,25 @@ class MainActivity : ComponentActivity() {
             )
     }
 
-    private fun hasFineLocation() = ContextCompat.checkSelfPermission(
-        this, Manifest.permission.ACCESS_FINE_LOCATION
-    ) == PackageManager.PERMISSION_GRANTED
+    private fun hasFineLocation() =
+        ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
 
     private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+            )
         }
     }
 
@@ -128,12 +163,22 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
-        if (Build.VERSION.SDK_INT >= 33) list += Manifest.permission.POST_NOTIFICATIONS
-        permissionLauncher.launch(list.toTypedArray())
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            list +=
+                Manifest.permission.POST_NOTIFICATIONS
+        }
+
+        permissionLauncher.launch(
+            list.toTypedArray()
+        )
     }
 
     companion object {
-        private const val BACK_EXIT_WINDOW_MS = 2_000L
-        private const val PROCESS_EXIT_DELAY_MS = 700L
+        private const val BACK_EXIT_WINDOW_MS =
+            2_000L
+
+        private const val PROCESS_EXIT_DELAY_MS =
+            700L
     }
 }

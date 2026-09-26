@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.location.Location
 import androidx.compose.runtime.Composable
@@ -24,6 +25,7 @@ import app.forestnav.data.WaypointType
 import app.forestnav.map.MapLayer
 import app.forestnav.map.MapStyles
 import app.forestnav.map.OfflineMapManager
+import app.forestnav.util.Geo
 import org.maplibre.android.annotations.Icon
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.Marker
@@ -53,6 +55,7 @@ private class NativeMapState {
     var trackFingerprint: Int = 0
     var measurementPolyline: Polyline? = null
     var measurementMarkers: List<Marker> = emptyList()
+    var measurementDistanceMarker: Marker? = null
     var measurementFingerprint: Int = 0
     val measurementIcons = mutableMapOf<String, Icon>()
     var loadedStyle: String? = null
@@ -359,6 +362,7 @@ private fun applyStyle(
         state.trackFingerprint = 0
         state.measurementPolyline = null
         state.measurementMarkers = emptyList()
+        state.measurementDistanceMarker = null
         state.measurementFingerprint = 0
 
         setupLocationPuck(
@@ -559,19 +563,60 @@ private fun updateMeasurementAnnotations(
     }
     state.measurementMarkers = emptyList()
 
+    state.measurementDistanceMarker?.let { marker ->
+        runCatching { map.removeMarker(marker) }
+    }
+    state.measurementDistanceMarker = null
+
     if (points.size >= 2) {
+        val a = points[0]
+        val b = points[1]
+
         @Suppress("DEPRECATION")
         state.measurementPolyline = map.addPolyline(
             PolylineOptions()
                 .addAll(
-                    points.take(2).map {
-                        LatLng(it.first, it.second)
-                    }
+                    listOf(
+                        LatLng(a.first, a.second),
+                        LatLng(b.first, b.second)
+                    )
                 )
                 .color(Color.rgb(255, 235, 59))
                 .width(5f)
                 .alpha(1f)
         )
+
+        val distance =
+            Geo.distanceMeters(
+                a.first,
+                a.second,
+                b.first,
+                b.second
+            )
+        val label =
+            Geo.distanceLabel(distance)
+
+        val midLat =
+            (a.first + b.first) / 2.0
+        val midLon =
+            (a.second + b.second) / 2.0
+
+        @Suppress("DEPRECATION")
+        state.measurementDistanceMarker =
+            map.addMarker(
+                MarkerOptions()
+                    .position(
+                        LatLng(midLat, midLon)
+                    )
+                    .icon(
+                        createDistanceLabelIcon(
+                            context,
+                            label
+                        )
+                    )
+                    .anchor(0.5f, 0.5f)
+                    .title(label)
+            )
     }
 
     @Suppress("DEPRECATION")
@@ -600,6 +645,94 @@ private fun updateMeasurementAnnotations(
         }
 
     state.measurementFingerprint = fingerprint
+}
+
+@Suppress("DEPRECATION")
+private fun createDistanceLabelIcon(
+    context: Context,
+    label: String
+): Icon {
+    val density =
+        context.resources.displayMetrics.density
+
+    val textPaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textAlign = Paint.Align.CENTER
+            textSize = 16f * density
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+    val horizontalPadding = 12f * density
+    val verticalPadding = 7f * density
+    val textWidth = textPaint.measureText(label)
+    val metrics = textPaint.fontMetrics
+    val textHeight =
+        metrics.descent - metrics.ascent
+
+    val width =
+        (textWidth + horizontalPadding * 2f)
+            .toInt()
+            .coerceAtLeast((56f * density).toInt())
+    val height =
+        (textHeight + verticalPadding * 2f)
+            .toInt()
+            .coerceAtLeast((32f * density).toInt())
+
+    val bitmap = Bitmap.createBitmap(
+        width,
+        height,
+        Bitmap.Config.ARGB_8888
+    )
+    val canvas = Canvas(bitmap)
+
+    val rect = RectF(
+        1f * density,
+        1f * density,
+        width - 1f * density,
+        height - 1f * density
+    )
+
+    val fill =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(255, 235, 59)
+            style = Paint.Style.FILL
+        }
+
+    val border =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * density
+        }
+
+    val radius = 10f * density
+    canvas.drawRoundRect(
+        rect,
+        radius,
+        radius,
+        fill
+    )
+    canvas.drawRoundRect(
+        rect,
+        radius,
+        radius,
+        border
+    )
+
+    val baseline =
+        height / 2f -
+            (metrics.ascent + metrics.descent) / 2f
+
+    canvas.drawText(
+        label,
+        width / 2f,
+        baseline,
+        textPaint
+    )
+
+    return IconFactory.getInstance(context)
+        .fromBitmap(bitmap)
 }
 
 @Suppress("DEPRECATION")

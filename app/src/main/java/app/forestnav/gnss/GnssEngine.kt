@@ -40,6 +40,8 @@ class GnssEngine(private val context: Context) : LocationListener {
     val satellites: StateFlow<SatelliteInfo> = _satellites.asStateFlow()
 
     private var started = false
+    private var statusRegistered = false
+    private var desiredMode: PowerMode? = null
     private var mode = PowerMode.NORMAL
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastNonZeroSatelliteAt = 0L
@@ -58,6 +60,13 @@ class GnssEngine(private val context: Context) : LocationListener {
     private val clearAfterStopRunnable = Runnable {
         if (!started) _satellites.value = SatelliteInfo()
     }
+
+    private val retryStartRunnable =
+        Runnable {
+            desiredMode?.let { requested ->
+                attemptStart(requested)
+            }
+        }
 
     private fun scheduleSatelliteZero() {
         mainHandler.removeCallbacks(clearSatellitesRunnable)
@@ -98,48 +107,137 @@ class GnssEngine(private val context: Context) : LocationListener {
 
     fun isGpsEnabled(): Boolean = manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
 
-    @SuppressLint("MissingPermission")
     fun start(powerMode: PowerMode = mode) {
-        if (!hasFinePermission()) return
-        if (started && powerMode == mode) return
-        if (started) stop(clearUiLater = false)
+        desiredMode = powerMode
+        mainHandler.removeCallbacks(retryStartRunnable)
 
-        mainHandler.removeCallbacks(clearAfterStopRunnable)
-        mode = powerMode
-
-        manager.requestLocationUpdates(
-            LocationManager.GPS_PROVIDER,
-            mode.intervalMs,
-            mode.minDistanceM,
-            this
-        )
-
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            manager.registerGnssStatusCallback(context.mainExecutor, statusCallback)
-        } else {
-            @Suppress("DEPRECATION")
-            manager.registerGnssStatusCallback(statusCallback)
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post {
+                desiredMode?.let { requested ->
+                    attemptStart(requested)
+                }
+            }
+            return
         }
 
-        started = true
+        attemptStart(powerMode)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun attemptStart(powerMode: PowerMode) {
+        if (desiredMode == null) return
+        if (!hasFinePermission()) return
+        if (started && powerMode == mode) return
+
+        if (started) {
+            stopInternal(clearUiLater = false)
+        }
+
+        mainHandler.removeCallbacks(clearAfterStopRunnable)
+        mainHandler.removeCallbacks(retryStartRunnable)
+        mode = powerMode
+
+        var locationRegistered = false
+
+        try {
+            manager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                mode.intervalMs,
+                mode.minDistanceM,
+                this,
+                Looper.getMainLooper()
+            )
+            locationRegistered = true
+            started = true
+
+            statusRegistered =
+                runCatching {
+                    if (
+                        android.os.Build.VERSION.SDK_INT >= 30
+                    ) {
+                        manager.registerGnssStatusCallback(
+                            context.mainExecutor,
+                            statusCallback
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        manager.registerGnssStatusCallback(
+                            statusCallback
+                        )
+                    }
+                }.isSuccess
+        } catch (_: SecurityException) {
+            if (locationRegistered) {
+                runCatching {
+                    manager.removeUpdates(this)
+                }
+            }
+            started = false
+            statusRegistered = false
+        } catch (_: RuntimeException) {
+            if (locationRegistered) {
+                runCatching {
+                    manager.removeUpdates(this)
+                }
+            }
+
+            started = false
+            statusRegistered = false
+
+            if (
+                desiredMode != null &&
+                hasFinePermission()
+            ) {
+                mainHandler.postDelayed(
+                    retryStartRunnable,
+                    START_RETRY_DELAY_MS
+                )
+            }
+        }
     }
 
     fun stop() {
-        stop(clearUiLater = true)
+        desiredMode = null
+        mainHandler.removeCallbacks(retryStartRunnable)
+
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post {
+                stopInternal(clearUiLater = true)
+            }
+            return
+        }
+
+        stopInternal(clearUiLater = true)
     }
 
-    private fun stop(clearUiLater: Boolean) {
-        if (!started) return
+    private fun stopInternal(
+        clearUiLater: Boolean
+    ) {
+        if (started) {
+            runCatching {
+                manager.removeUpdates(this)
+            }
+        }
 
-        manager.removeUpdates(this)
-        manager.unregisterGnssStatusCallback(statusCallback)
+        if (statusRegistered) {
+            runCatching {
+                manager.unregisterGnssStatusCallback(
+                    statusCallback
+                )
+            }
+        }
+
         started = false
+        statusRegistered = false
 
         mainHandler.removeCallbacks(clearSatellitesRunnable)
         mainHandler.removeCallbacks(clearAfterStopRunnable)
 
         if (clearUiLater) {
-            mainHandler.postDelayed(clearAfterStopRunnable, SATELLITE_STOP_GRACE_MS)
+            mainHandler.postDelayed(
+                clearAfterStopRunnable,
+                SATELLITE_STOP_GRACE_MS
+            )
         }
     }
 
@@ -249,6 +347,7 @@ class GnssEngine(private val context: Context) : LocationListener {
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
 
     companion object {
+        private const val START_RETRY_DELAY_MS = 1_200L
         private const val SATELLITE_ZERO_GRACE_MS = 6_000L
         private const val SATELLITE_STOP_GRACE_MS = 3_000L
 

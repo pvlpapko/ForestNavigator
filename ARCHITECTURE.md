@@ -94,3 +94,14 @@ The location foreground service owns its own GnssEngine, so MainActivity stoppin
 ## Immediate download controls
 
 OfflineMapDownloadState performs optimistic PAUSED/ACTIVE/remove updates from the ViewModel. OfflineMapDownloadService also tracks every live OkHttp Call per region. Pause/delete cancel those calls immediately and cancel the coroutine job, avoiding the previous wait for a 45-second read timeout. Resume requests received while a job is stopping are queued and relaunched from the job's finally block.
+
+
+## 1.8.1 UI and GNSS hardening
+
+Measurement owns an additional centered MapLibre marker whose icon is generated from the formatted geodesic distance. The bottom measurement text is shown only while A or B is still being selected.
+
+The main navigation now contains MAP / POINTS / TRACKS / COMPASS / MORE. Track history comes from ForestDatabase.listTracks(); deletion is transactional across track_points and tracks. TrackRecordingState exposes the displayed track id so deleting the last completed track also clears its map overlay.
+
+MainActivity owns one full-exit callback shared by the top map button and the double-back gesture. Full exit pauses offline downloads, stops track recording and UI sensors, removes the task and terminates the process.
+
+GnssEngine now serializes registration on the main looper, tracks desired/started/status-registration state separately, rolls back partial LocationManager registration on exceptions, tolerates optional satellite-status registration failure, and retries transient RuntimeException startup failures after 1.2 seconds rather than crashing the app.
