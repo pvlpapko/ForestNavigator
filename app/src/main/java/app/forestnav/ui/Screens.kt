@@ -1139,6 +1139,9 @@ private fun OfflineScreen(vm: AppViewModel) {
     val regions by vm.offlineRegions.collectAsState()
     val layer by vm.mapLayer.collectAsState()
     var radius by remember { mutableDoubleStateOf(5.0) }
+    var pendingRegionDelete by remember {
+        mutableStateOf<Pair<Long, String>?>(null)
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -1341,12 +1344,76 @@ private fun OfflineScreen(vm: AppViewModel) {
                 },
                 supportingContent = { Text("ID ${region.first}") },
                 trailingContent = {
-                    IconButton(onClick = { vm.deleteOfflineRegion(region.first) }) {
-                        Icon(Icons.Default.DeleteOutline, "Удалить")
+                    IconButton(
+                        onClick = {
+                            pendingRegionDelete =
+                                region.first to region.second
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.DeleteOutline,
+                            "Удалить"
+                        )
                     }
                 }
             )
         }
+    }
+
+    pendingRegionDelete?.let { region ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingRegionDelete = null
+            },
+            icon = {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = null
+                )
+            },
+            title = {
+                Text("Удалить скачанную карту?")
+            },
+            text = {
+                val displayName =
+                    region.second.ifBlank {
+                        "Офлайн-область #${region.first}"
+                    }
+
+                Text(
+                    "Область «$displayName» и все её скачанные тайлы будут удалены. " +
+                        "Это действие нельзя отменить."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.deleteOfflineRegion(
+                            region.first
+                        )
+                        pendingRegionDelete = null
+                    },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.error,
+                            contentColor =
+                                MaterialTheme.colorScheme.onError
+                        )
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingRegionDelete = null
+                    }
+                ) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
 

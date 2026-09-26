@@ -138,3 +138,12 @@ GnssEngine now registers both GPS_PROVIDER and NETWORK_PROVIDER. It first publis
 NETWORK_PROVIDER is presentation bootstrap/fallback only. GPS updates populate rawLocation and update the display immediately; once a GPS fix is recent, network callbacks are ignored for 15 seconds. This gives fast indoor/cold-start map positioning without contaminating PreciseFixCollector, which still consumes only raw GPS fixes.
 
 Provider registration remains individually guarded so an unavailable OEM network provider cannot break GPS startup.
+
+
+## 1.8.6 durable offline-map deletion
+
+OfflineMapManager persists deleted region IDs before filesystem cleanup. allMetas() and loadMeta() ignore tombstoned IDs, which also removes them from listRegions(), selectionFor(), activeOrPausedMetas() and service restore.
+
+deleteRecursively() is therefore physical cleanup only. If it cannot remove every tile immediately, the tombstone remains durable and cleanupLegacyFiles() retries later. The ViewModel optimistically removes the completed region from StateFlow before IO cleanup begins.
+
+The Offline UI requires explicit confirmation before deleting a completed map region.

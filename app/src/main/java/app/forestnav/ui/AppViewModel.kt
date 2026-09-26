@@ -401,13 +401,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteOfflineRegion(id: Long) {
+        _offlineRegions.value =
+            _offlineRegions.value.filterNot {
+                it.first == id
+            }
+
         viewModelScope.launch(Dispatchers.IO) {
             offline.deleteRegion(
                 id = id,
                 onSuccess = {
                     refreshOfflineRegionsInternal()
                 },
-                onError = {}
+                onError = {
+                    refreshOfflineRegionsInternal()
+                }
             )
         }
     }

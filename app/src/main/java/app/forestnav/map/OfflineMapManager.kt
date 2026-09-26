@@ -90,6 +90,11 @@ class OfflineMapManager(context: Context) {
 
     private val appContext = context.applicationContext
     private val root = File(appContext.filesDir, ROOT_DIR).apply { mkdirs() }
+    private val deletionPrefs =
+        appContext.getSharedPreferences(
+            DELETE_PREFS,
+            Context.MODE_PRIVATE
+        )
 
     fun cleanupLegacyFiles() {
         LEGACY_ROOT_DIRS.forEach { directory ->
@@ -102,6 +107,8 @@ class OfflineMapManager(context: Context) {
                 Context.MODE_PRIVATE
             ).edit().clear().apply()
         }
+
+        cleanupPendingDeletions()
     }
 
     fun createRegion(
@@ -139,7 +146,16 @@ class OfflineMapManager(context: Context) {
     }
 
     fun loadMeta(id: Long): RegionMeta? =
-        readMeta(File(regionDir(id), META_FILE))
+        if (isDeleted(id)) {
+            null
+        } else {
+            readMeta(
+                File(
+                    regionDir(id),
+                    META_FILE
+                )
+            )
+        }
 
     fun updateStatus(
         id: Long,
@@ -157,7 +173,23 @@ class OfflineMapManager(context: Context) {
         onError: (Throwable) -> Unit
     ) {
         runCatching {
-            regionDir(id).deleteRecursively()
+            // Hide the region first. Physical deletion of a large tile tree
+            // can take time or fail temporarily if native rendering still has
+            // a tile file open.
+            markDeleted(id)
+
+            val dir = regionDir(id)
+
+            if (
+                dir.exists() &&
+                !dir.deleteRecursively()
+            ) {
+                // Keep the tombstone. The region stays invisible and cleanup
+                // will retry on a later app start.
+                return@runCatching
+            }
+
+            clearDeleted(id)
         }.onSuccess {
             onSuccess()
         }.onFailure(onError)
@@ -391,11 +423,104 @@ class OfflineMapManager(context: Context) {
             )
         }.getOrNull()
 
-    private fun allMetas(): List<RegionMeta> =
-        root.listFiles()
+    private fun allMetas(): List<RegionMeta> {
+        val deleted = deletedIds()
+
+        return root.listFiles()
             .orEmpty()
             .filter { it.isDirectory }
-            .mapNotNull { readMeta(File(it, META_FILE)) }
+            .filter { directory ->
+                directory.name.toLongOrNull()
+                    ?.let { it !in deleted }
+                    ?: false
+            }
+            .mapNotNull {
+                readMeta(
+                    File(
+                        it,
+                        META_FILE
+                    )
+                )
+            }
+    }
+
+    private fun cleanupPendingDeletions() {
+        deletedIds().forEach { id ->
+            val dir = regionDir(id)
+
+            if (
+                !dir.exists() ||
+                dir.deleteRecursively()
+            ) {
+                clearDeleted(id)
+            }
+        }
+    }
+
+    private fun isDeleted(id: Long): Boolean =
+        id in deletedIds()
+
+    private fun deletedIds(): Set<Long> =
+        synchronized(DELETE_LOCK) {
+            deletionPrefs
+                .getStringSet(
+                    DELETE_IDS_KEY,
+                    emptySet()
+                )
+                .orEmpty()
+                .mapNotNull {
+                    it.toLongOrNull()
+                }
+                .toSet()
+        }
+
+    private fun markDeleted(id: Long) {
+        synchronized(DELETE_LOCK) {
+            val updated =
+                deletionPrefs
+                    .getStringSet(
+                        DELETE_IDS_KEY,
+                        emptySet()
+                    )
+                    .orEmpty()
+                    .toMutableSet()
+
+            updated += id.toString()
+
+            check(
+                deletionPrefs.edit()
+                    .putStringSet(
+                        DELETE_IDS_KEY,
+                        updated
+                    )
+                    .commit()
+            ) {
+                "Не удалось пометить офлайн-карту для удаления"
+            }
+        }
+    }
+
+    private fun clearDeleted(id: Long) {
+        synchronized(DELETE_LOCK) {
+            val updated =
+                deletionPrefs
+                    .getStringSet(
+                        DELETE_IDS_KEY,
+                        emptySet()
+                    )
+                    .orEmpty()
+                    .toMutableSet()
+
+            updated -= id.toString()
+
+            deletionPrefs.edit()
+                .putStringSet(
+                    DELETE_IDS_KEY,
+                    updated
+                )
+                .apply()
+        }
+    }
 
     private fun regionDir(id: Long): File =
         File(root, id.toString())
@@ -571,6 +696,12 @@ class OfflineMapManager(context: Context) {
         private const val SCHEMA = 10
         private const val ROOT_DIR = "offline_maps_v10"
         private const val META_FILE = "region.properties"
+        private const val DELETE_PREFS =
+            "offline_map_delete_tombstones"
+        private const val DELETE_IDS_KEY =
+            "deleted_region_ids"
+        private val DELETE_LOCK = Any()
+
         private const val MIN_TILE_BYTES = 128L
         private const val EARTH_RADIUS_METERS = 6_371_008.8
 
