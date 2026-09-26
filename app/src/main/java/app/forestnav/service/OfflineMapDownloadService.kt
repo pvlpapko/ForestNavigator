@@ -1068,20 +1068,22 @@ class OfflineMapDownloadService : Service() {
     private fun calculateAutomaticParallelism(): Int {
         val runtime = Runtime.getRuntime()
 
-        val heapBudget =
+        val heapBudgetLong =
             (
-                (
-                    runtime.maxMemory() *
-                        HEAP_BUDGET_PERCENT
-                    ) /
+                runtime.maxMemory() *
+                    HEAP_BUDGET_PERCENT /
                     100L /
                     ESTIMATED_ACTIVE_REQUEST_BYTES
                 )
                 .coerceAtLeast(
                     MIN_AUTO_PARALLELISM.toLong()
                 )
-                .coerceAtMost(Int.MAX_VALUE.toLong())
-            ).toInt()
+                .coerceAtMost(
+                    Int.MAX_VALUE.toLong()
+                )
+
+        val heapBudget =
+            heapBudgetLong.toInt()
 
         val openFdCount =
             File("/proc/self/fd")
@@ -1092,20 +1094,24 @@ class OfflineMapDownloadService : Service() {
         val fdLimit =
             readSoftFileDescriptorLimit()
 
-        val fdBudget =
+        val fdBudgetLong =
             (
-                (
-                    fdLimit.toLong() -
-                        openFdCount.toLong() -
-                        FD_RESERVE.toLong()
-                    ) /
-                    FD_PER_ACTIVE_REQUEST
+                fdLimit.toLong() -
+                    openFdCount.toLong() -
+                    FD_RESERVE.toLong()
                 )
+                .coerceAtLeast(0L) /
+                FD_PER_ACTIVE_REQUEST
+
+        val fdBudget =
+            fdBudgetLong
                 .coerceAtLeast(
                     MIN_AUTO_PARALLELISM.toLong()
                 )
-                .coerceAtMost(Int.MAX_VALUE.toLong())
-            ).toInt()
+                .coerceAtMost(
+                    Int.MAX_VALUE.toLong()
+                )
+                .toInt()
 
         return minOf(
             heapBudget,
