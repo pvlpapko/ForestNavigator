@@ -112,6 +112,16 @@ class OfflineMapDownloadService : Service() {
     private val scope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    private val automaticParallelism by lazy {
+        calculateAutomaticParallelism()
+    }
+
+    private val downloadDispatcher by lazy {
+        Dispatchers.IO.limitedParallelism(
+            automaticParallelism
+        )
+    }
+
     private val running =
         ConcurrentHashMap<Long, Job>()
 
@@ -132,15 +142,17 @@ class OfflineMapDownloadService : Service() {
 
     private val httpClient by lazy {
         val dispatcher = Dispatcher().apply {
-            maxRequests = MAX_HTTP_REQUESTS
-            maxRequestsPerHost = MAX_HTTP_REQUESTS_PER_HOST
+            // No fixed app speed cap. The active request ceiling is derived
+            // from this process' heap and file-descriptor budget.
+            maxRequests = automaticParallelism
+            maxRequestsPerHost = automaticParallelism
         }
 
         OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .connectionPool(
                 ConnectionPool(
-                    MAX_IDLE_CONNECTIONS,
+                    automaticParallelism,
                     5,
                     TimeUnit.MINUTES
                 )
@@ -301,7 +313,13 @@ class OfflineMapDownloadService : Service() {
                 coroutineScope {
                     val queue =
                         Channel<OfflineMapManager.TileTask>(
-                            capacity = TILE_QUEUE_CAPACITY
+                            capacity =
+                                (
+                                    automaticParallelism *
+                                        TILE_QUEUE_MULTIPLIER
+                                    ).coerceAtLeast(
+                                    MIN_TILE_QUEUE_CAPACITY
+                                )
                         )
 
                     val producer = launch {
@@ -314,8 +332,14 @@ class OfflineMapDownloadService : Service() {
                         }
                     }
 
-                    val workers = List(DOWNLOAD_WORKERS_PER_REGION) {
-                        launch {
+                    val workerCount =
+                        minOf(
+                            automaticParallelism.toLong(),
+                            total.coerceAtLeast(1L)
+                        ).toInt()
+
+                    val workers = List(workerCount) {
+                        launch(downloadDispatcher) {
                             for (task in queue) {
                                 if (
                                     task.file.isFile &&
@@ -1041,6 +1065,87 @@ class OfflineMapDownloadService : Service() {
         val maxZoom: Int
     )
 
+    private fun calculateAutomaticParallelism(): Int {
+        val runtime = Runtime.getRuntime()
+
+        val heapBudget =
+            (
+                (
+                    runtime.maxMemory() *
+                        HEAP_BUDGET_PERCENT
+                    ) /
+                    100L /
+                    ESTIMATED_ACTIVE_REQUEST_BYTES
+                )
+                .coerceAtLeast(
+                    MIN_AUTO_PARALLELISM.toLong()
+                )
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+            ).toInt()
+
+        val openFdCount =
+            File("/proc/self/fd")
+                .list()
+                ?.size
+                ?: FALLBACK_OPEN_FD_COUNT
+
+        val fdLimit =
+            readSoftFileDescriptorLimit()
+
+        val fdBudget =
+            (
+                (
+                    fdLimit.toLong() -
+                        openFdCount.toLong() -
+                        FD_RESERVE.toLong()
+                    ) /
+                    FD_PER_ACTIVE_REQUEST
+                )
+                .coerceAtLeast(
+                    MIN_AUTO_PARALLELISM.toLong()
+                )
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+            ).toInt()
+
+        return minOf(
+            heapBudget,
+            fdBudget
+        ).coerceAtLeast(
+            MIN_AUTO_PARALLELISM
+        )
+    }
+
+    private fun readSoftFileDescriptorLimit(): Int {
+        return runCatching {
+            val line =
+                File("/proc/self/limits")
+                    .useLines { lines ->
+                        lines.firstOrNull {
+                            it.startsWith("Max open files")
+                        }
+                    }
+                    ?: return@runCatching FALLBACK_FD_LIMIT
+
+            val match =
+                Regex(
+                    """Max open files\s+(\d+|unlimited)"""
+                ).find(line)
+                    ?: return@runCatching FALLBACK_FD_LIMIT
+
+            val raw = match.groupValues[1]
+
+            if (raw == "unlimited") {
+                FALLBACK_UNLIMITED_FD_BUDGET
+            } else {
+                raw.toLong()
+                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                    .toInt()
+            }
+        }.getOrDefault(
+            FALLBACK_FD_LIMIT
+        )
+    }
+
     companion object {
         private const val CHANNEL_ID =
             "direct_tile_download_v8"
@@ -1074,13 +1179,19 @@ class OfflineMapDownloadService : Service() {
         private const val EXTRA_MAX_ZOOM = "max_zoom"
         private const val EXTRA_REGION_ID = "region_id"
 
-        private const val DOWNLOAD_WORKERS_PER_REGION = 64
-        private const val TILE_QUEUE_CAPACITY = 1_536
-        private const val MAX_HTTP_REQUESTS = 128
-        private const val MAX_HTTP_REQUESTS_PER_HOST = 64
+        private const val MIN_AUTO_PARALLELISM = 64
+        private const val HEAP_BUDGET_PERCENT = 35L
+        private const val ESTIMATED_ACTIVE_REQUEST_BYTES =
+            768L * 1024L
+        private const val FD_RESERVE = 128
+        private const val FD_PER_ACTIVE_REQUEST = 2L
+        private const val FALLBACK_OPEN_FD_COUNT = 64
+        private const val FALLBACK_FD_LIMIT = 1024
+        private const val FALLBACK_UNLIMITED_FD_BUDGET = 4096
+        private const val TILE_QUEUE_MULTIPLIER = 8
+        private const val MIN_TILE_QUEUE_CAPACITY = 512
         private const val TILE_RETRIES = 4
         private const val MIN_TILE_BYTES = 128L
-        private const val MAX_IDLE_CONNECTIONS = 64
         private const val NETWORK_BUFFER_BYTES = 64 * 1024
         private const val SKIP_SUFFIX = ".skip"
         private const val PROGRESS_PUBLISH_INTERVAL_MS = 750L

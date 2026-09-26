@@ -105,3 +105,12 @@ The main navigation now contains MAP / POINTS / TRACKS / COMPASS / MORE. Track h
 MainActivity owns one full-exit callback shared by the top map button and the double-back gesture. Full exit pauses offline downloads, stops track recording and UI sensors, removes the task and terminates the process.
 
 GnssEngine now serializes registration on the main looper, tracks desired/started/status-registration state separately, rolls back partial LocationManager registration on exceptions, tolerates optional satellite-status registration failure, and retries transient RuntimeException startup failures after 1.2 seconds rather than crashing the app.
+
+
+## 1.8.3 automatic download parallelism
+
+The downloader no longer uses fixed constants for 64 workers / 128 total HTTP calls. At service startup it derives a process-safe concurrency budget from Runtime.maxMemory() and /proc/self/limits + /proc/self/fd.
+
+35% of the app heap is available to active download work using a conservative per-request memory estimate. The file-descriptor budget reserves descriptors for SQLite, MapLibre, notifications and Android internals, then divides the remainder by the expected descriptors per active request. The lower of the heap and FD budgets becomes the automatic parallelism.
+
+Workers run on Dispatchers.IO.limitedParallelism(automaticParallelism). The same value configures OkHttp maxRequests, maxRequestsPerHost and the connection pool. There is no fixed performance ceiling; only resource-derived protection against OOM/EMFILE process death.
