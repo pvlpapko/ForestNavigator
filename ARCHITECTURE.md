@@ -79,3 +79,18 @@ Schema 10 stores every region from zoom 8 through its configured max zoom. The l
 Exact-square clipping remains active for every boundary tile at every zoom. Thus overview tiles are transparent outside the geodesic region instead of painting a large coarse rectangle around it.
 
 v9 regions are invalidated on upgrade because they were created without the missing overview levels and cannot be repaired by style metadata alone.
+
+
+## Map measurement
+
+Measurement is transient UI state. MapScreen owns up to two latitude/longitude pairs and passes them to ForestMapView. MapLibre renders A/B markers plus a yellow Polyline. Distance is calculated geodesically through the existing Geo utility. Long-press waypoint creation remains independent.
+
+## Live track overlay
+
+TrackRecordingState exposes both recording state and the current route points. TrackRecordingService restores the active track from SQLite, appends accepted fixes to the DB and StateFlow, and ForestMapView renders them as a Polyline on both map styles.
+
+The location foreground service owns its own GnssEngine, so MainActivity stopping foreground UI sensors on screen-off does not stop track recording. A PARTIAL_WAKE_LOCK is held only while recording. Active track id/state are persisted so START_STICKY recreation continues the same database track instead of starting a duplicate.
+
+## Immediate download controls
+
+OfflineMapDownloadState performs optimistic PAUSED/ACTIVE/remove updates from the ViewModel. OfflineMapDownloadService also tracks every live OkHttp Call per region. Pause/delete cancel those calls immediately and cancel the coroutine job, avoiding the previous wait for a 45-second read timeout. Resume requests received while a job is stopping are queued and relaunched from the job's finally block.

@@ -45,10 +45,14 @@ fun MapScreen(vm: AppViewModel) {
     val online by vm.online.collectAsState()
     val initialMapScaleMeters by vm.initialMapScaleMeters.collectAsState()
     val recording by TrackRecordingState.recording.collectAsState()
+    val trackPoints by TrackRecordingState.points.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var recenterToken by remember { mutableIntStateOf(0) }
     var pendingMapPoint by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    var pointPlacementMode by remember { mutableStateOf(false) }
+    var measurementMode by remember { mutableStateOf(false) }
+    var measurementPoints by remember {
+        mutableStateOf<List<Pair<Double, Double>>>(emptyList())
+    }
     var selectedMapWaypoint by remember { mutableStateOf<Waypoint?>(null) }
     var mapScaleMeters by remember { mutableDoubleStateOf(0.0) }
 
@@ -135,12 +139,23 @@ fun MapScreen(vm: AppViewModel) {
                     }
                 } else {
                     val mapClick: (Double, Double) -> Unit = { lat, lon ->
-                        pendingMapPoint = lat to lon
-                        pointPlacementMode = false
+                        if (measurementMode) {
+                            measurementPoints =
+                                if (measurementPoints.size >= 2) {
+                                    listOf(lat to lon)
+                                } else {
+                                    measurementPoints +
+                                        (lat to lon)
+                                }
+                        }
                     }
+
+                    val longPress: (Double, Double) -> Unit = { lat, lon ->
+                        pendingMapPoint = lat to lon
+                    }
+
                     val waypointClick: (Waypoint) -> Unit = { waypoint ->
                         selectedMapWaypoint = waypoint
-                        pointPlacementMode = false
                     }
 
                     ForestMapView(
@@ -148,13 +163,15 @@ fun MapScreen(vm: AppViewModel) {
                         location = location!!,
                         heading = heading,
                         waypoints = waypoints,
+                        trackPoints = trackPoints,
+                        measurementPoints = measurementPoints,
                         layer = layer,
                         online = online,
                         initialScaleMeters = initialMapScaleMeters.toDouble(),
                         recenterToken = recenterToken,
-                        pointPlacementEnabled = pointPlacementMode,
+                        pointPlacementEnabled = measurementMode,
                         onMapClick = mapClick,
-                        onMapLongPress = mapClick,
+                        onMapLongPress = longPress,
                         onWaypointClick = waypointClick,
                         onMapScaleChanged = { mapScaleMeters = it }
                     )
@@ -249,12 +266,36 @@ fun MapScreen(vm: AppViewModel) {
                             )
                             TextButton(onClick = vm::cancelPrecise) { Text("Отмена") }
                         } else {
-                            if (pointPlacementMode) {
+                            if (measurementMode) {
+                                val measureText =
+                                    when (measurementPoints.size) {
+                                        0 ->
+                                            "Линейка: коснитесь карты — точка A"
+
+                                        1 ->
+                                            "Линейка: поставьте точку B"
+
+                                        else -> {
+                                            val a = measurementPoints[0]
+                                            val b = measurementPoints[1]
+                                            val distance = Geo.distanceMeters(
+                                                a.first,
+                                                a.second,
+                                                b.first,
+                                                b.second
+                                            )
+                                            "Расстояние A–B: " +
+                                                Geo.distanceLabel(distance) +
+                                                " • новый тап начнёт новое измерение"
+                                        }
+                                    }
+
                                 Text(
-                                    "Коснитесь нужного места на карте",
+                                    measureText,
                                     modifier = Modifier.fillMaxWidth(),
                                     style = MaterialTheme.typography.labelSmall,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    textAlign =
+                                        androidx.compose.ui.text.style.TextAlign.Center,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -294,12 +335,20 @@ fun MapScreen(vm: AppViewModel) {
 
                                 SmallAction(
                                     Modifier.weight(1f),
-                                    Icons.Default.AddLocationAlt,
-                                    if (pointPlacementMode) "Отмена" else "Точка",
+                                    Icons.Default.Straighten,
+                                    "Линейка",
                                     location != null,
-                                    selected = pointPlacementMode
+                                    selected = measurementMode
                                 ) {
-                                    pointPlacementMode = !pointPlacementMode
+                                    measurementMode =
+                                        !measurementMode
+                                    if (!measurementMode) {
+                                        measurementPoints =
+                                            emptyList()
+                                    } else {
+                                        measurementPoints =
+                                            emptyList()
+                                    }
                                 }
 
                                 SmallAction(
@@ -308,7 +357,6 @@ fun MapScreen(vm: AppViewModel) {
                                     "Я здесь",
                                     location != null
                                 ) {
-                                    pointPlacementMode = false
                                     recenterToken++
                                 }
                             }

@@ -349,6 +349,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelDownload(regionId: Long) {
+        OfflineMapDownloadState.markPaused(regionId)
         OfflineMapDownloadService.cancel(
             context = app,
             regionId = regionId
@@ -356,6 +357,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeDownload(regionId: Long) {
+        OfflineMapDownloadState.markActive(regionId)
         OfflineMapDownloadService.resume(
             context = app,
             regionId = regionId
@@ -363,6 +365,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteDownload(regionId: Long) {
+        OfflineMapDownloadState.remove(regionId)
         OfflineMapDownloadService.delete(
             context = app,
             regionId = regionId

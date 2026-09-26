@@ -63,6 +63,38 @@ object OfflineMapDownloadState {
             _progress.value = _progress.value - regionId
         }
     }
+
+    internal fun markPaused(regionId: Long) {
+        synchronized(lock) {
+            val current = _progress.value[regionId]
+                ?: return
+            _progress.value =
+                _progress.value +
+                    (
+                        regionId to current.copy(
+                            active = false,
+                            cancelled = true
+                        )
+                    )
+        }
+    }
+
+    internal fun markActive(regionId: Long) {
+        synchronized(lock) {
+            val current = _progress.value[regionId]
+                ?: return
+            _progress.value =
+                _progress.value +
+                    (
+                        regionId to current.copy(
+                            active = true,
+                            cancelled = false,
+                            needsRetry = false,
+                            error = null
+                        )
+                    )
+        }
+    }
 }
 
 /**
@@ -82,6 +114,15 @@ class OfflineMapDownloadService : Service() {
 
     private val running =
         ConcurrentHashMap<Long, Job>()
+
+    private val activeCalls =
+        ConcurrentHashMap<
+            Long,
+            MutableSet<okhttp3.Call>
+        >()
+
+    private val pendingResume =
+        ConcurrentHashMap.newKeySet<Long>()
 
     private val deleting =
         ConcurrentHashMap.newKeySet<Long>()
@@ -149,9 +190,21 @@ class OfflineMapDownloadService : Service() {
             }
 
             ACTION_RESUME -> {
-                val id = intent.getLongExtra(EXTRA_REGION_ID, -1L)
+                val id = intent.getLongExtra(
+                    EXTRA_REGION_ID,
+                    -1L
+                )
+
                 if (id > 0L) {
-                    manager.loadMeta(id)?.let(::launchDownload)
+                    OfflineMapDownloadState.markActive(id)
+                    val existing = running[id]
+
+                    if (existing != null) {
+                        pendingResume += id
+                    } else {
+                        manager.loadMeta(id)
+                            ?.let(::launchDownload)
+                    }
                 }
             }
 
@@ -160,6 +213,10 @@ class OfflineMapDownloadService : Service() {
                 if (id > 0L) {
                     deleteRegion(id)
                 }
+            }
+
+            ACTION_STOP_ALL -> {
+                pauseAll()
             }
 
             ACTION_RESTORE, null -> {
@@ -374,9 +431,24 @@ class OfflineMapDownloadService : Service() {
                 }
             } finally {
                 running.remove(meta.id)
+                cancelCalls(meta.id)
                 lastPublishAt.remove(meta.id)
-                updateAggregateNotification()
-                stopIfIdle()
+
+                when {
+                    deleting.contains(meta.id) -> {
+                        finishDelete(meta.id)
+                    }
+
+                    pendingResume.remove(meta.id) -> {
+                        manager.loadMeta(meta.id)
+                            ?.let(::launchDownload)
+                    }
+
+                    else -> {
+                        updateAggregateNotification()
+                        stopIfIdle()
+                    }
+                }
             }
         }
 
@@ -408,7 +480,11 @@ class OfflineMapDownloadService : Service() {
                     .header("User-Agent", "ForestNavigator/1.7.3")
                     .build()
 
-                httpClient.newCall(request).execute().use { response ->
+                val call = httpClient.newCall(request)
+                registerCall(meta.id, call)
+
+                try {
+                    call.execute().use { response ->
                     when {
                         response.code == 404 ||
                             response.code == 204 -> {
@@ -497,6 +573,9 @@ class OfflineMapDownloadService : Service() {
                             )
                         }
                     }
+                    }
+                } finally {
+                    unregisterCall(meta.id, call)
                 }
             } catch (t: Throwable) {
                 lastError = t
@@ -597,51 +676,60 @@ class OfflineMapDownloadService : Service() {
     }
 
     private fun pauseRegion(id: Long) {
+        OfflineMapDownloadState.markPaused(id)
+        pendingResume.remove(id)
+
+        manager.updateStatus(
+            id,
+            OfflineMapManager.RegionStatus.PAUSED
+        )
+
+        cancelCalls(id)
+        running[id]?.cancel()
+
         scope.launch {
-            running.remove(id)?.cancelAndJoin()
-
-            manager.updateStatus(
-                id,
-                OfflineMapManager.RegionStatus.PAUSED
-            )?.let { meta ->
-                val total = manager.totalTiles(meta)
-                val (completed, bytes) =
-                    manager.completedStats(meta)
-
-                publish(
-                    meta = meta,
-                    completed = completed,
-                    total = total,
-                    bytes = bytes,
-                    active = false,
-                    cancelled = true,
-                    force = true
-                )
-            }
-
+            running[id]?.join()
             stopIfIdle()
         }
     }
 
     private fun pauseAll() {
+        val ids = running.keys.toList()
+
+        ids.forEach { id ->
+            OfflineMapDownloadState.markPaused(id)
+            pendingResume.remove(id)
+            manager.updateStatus(
+                id,
+                OfflineMapManager.RegionStatus.PAUSED
+            )
+            cancelCalls(id)
+            running[id]?.cancel()
+        }
+
         scope.launch {
-            running.keys.toList().forEach { id ->
-                running.remove(id)?.cancelAndJoin()
-                manager.updateStatus(
-                    id,
-                    OfflineMapManager.RegionStatus.PAUSED
-                )
-            }
+            ids.mapNotNull { running[it] }
+                .joinAll()
             stopIfIdle()
         }
     }
 
     private fun deleteRegion(id: Long) {
+        deleting += id
+        pendingResume.remove(id)
+
+        OfflineMapDownloadState.remove(id)
+        cancelCalls(id)
+        running[id]?.cancel()
+
+        val job = running[id]
+        if (job == null) {
+            finishDelete(id)
+        }
+    }
+
+    private fun finishDelete(id: Long) {
         scope.launch {
-            deleting += id
-
-            running.remove(id)?.cancelAndJoin()
-
             manager.deleteRegion(
                 id = id,
                 onSuccess = {
@@ -659,6 +747,35 @@ class OfflineMapDownloadService : Service() {
             lastPublishAt.remove(id)
             stopIfIdle()
         }
+    }
+
+    private fun registerCall(
+        regionId: Long,
+        call: okhttp3.Call
+    ) {
+        val set = activeCalls.getOrPut(regionId) {
+            ConcurrentHashMap.newKeySet()
+        }
+        set += call
+    }
+
+    private fun unregisterCall(
+        regionId: Long,
+        call: okhttp3.Call
+    ) {
+        activeCalls[regionId]?.let { set ->
+            set -= call
+            if (set.isEmpty()) {
+                activeCalls.remove(regionId, set)
+            }
+        }
+    }
+
+    private fun cancelCalls(regionId: Long) {
+        activeCalls.remove(regionId)
+            ?.forEach { call ->
+                runCatching { call.cancel() }
+            }
     }
 
     private fun publish(
@@ -945,6 +1062,9 @@ class OfflineMapDownloadService : Service() {
         private const val ACTION_RESTORE =
             "app.forestnav.action.RESTORE_DIRECT_TILES"
 
+        private const val ACTION_STOP_ALL =
+            "app.forestnav.action.STOP_ALL_DIRECT_TILES"
+
         private const val EXTRA_NAME = "name"
         private const val EXTRA_LAYER = "layer"
         private const val EXTRA_LAT = "lat"
@@ -1066,6 +1186,15 @@ class OfflineMapDownloadService : Service() {
                     context,
                     OfflineMapDownloadService::class.java
                 ).setAction(ACTION_RESTORE)
+            )
+        }
+
+        fun stopAll(context: Context) {
+            context.startService(
+                Intent(
+                    context,
+                    OfflineMapDownloadService::class.java
+                ).setAction(ACTION_STOP_ALL)
             )
         }
     }

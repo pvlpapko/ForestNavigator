@@ -18,6 +18,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import app.forestnav.data.TrackPoint
 import app.forestnav.data.Waypoint
 import app.forestnav.data.WaypointType
 import app.forestnav.map.MapLayer
@@ -27,6 +28,8 @@ import org.maplibre.android.annotations.Icon
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.Marker
 import org.maplibre.android.annotations.MarkerOptions
+import org.maplibre.android.annotations.Polyline
+import org.maplibre.android.annotations.PolylineOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
@@ -46,6 +49,12 @@ private class NativeMapState {
     var waypointMarkers: List<Marker> = emptyList()
     val waypointByMarkerId = mutableMapOf<Long, Waypoint>()
     var waypointFingerprint: Int = 0
+    var trackPolyline: Polyline? = null
+    var trackFingerprint: Int = 0
+    var measurementPolyline: Polyline? = null
+    var measurementMarkers: List<Marker> = emptyList()
+    var measurementFingerprint: Int = 0
+    val measurementIcons = mutableMapOf<String, Icon>()
     var loadedStyle: String? = null
     var loadingStyle: String? = null
     val waypointIcons = mutableMapOf<WaypointType, Icon>()
@@ -66,6 +75,8 @@ fun ForestMapView(
     location: Location,
     heading: Float?,
     waypoints: List<Waypoint>,
+    trackPoints: List<TrackPoint> = emptyList(),
+    measurementPoints: List<Pair<Double, Double>> = emptyList(),
     layer: MapLayer,
     online: Boolean,
     initialScaleMeters: Double = DEFAULT_INITIAL_SCALE_METERS,
@@ -218,6 +229,8 @@ fun ForestMapView(
                         styleJson = styleJson,
                         location = location,
                         waypoints = waypoints,
+                        trackPoints = trackPoints,
+                        measurementPoints = measurementPoints,
                         mapView = mapView,
                         initialScaleMeters = initialScaleMeters
                     )
@@ -249,6 +262,8 @@ fun ForestMapView(
                     styleJson = styleJson,
                     location = location,
                     waypoints = waypoints,
+                    trackPoints = trackPoints,
+                    measurementPoints = measurementPoints,
                     mapView = mapView,
                     initialScaleMeters = initialScaleMeters
                 )
@@ -257,6 +272,17 @@ fun ForestMapView(
 
             updateLocationPuck(map, state, location)
             updateWaypointAnnotations(context, map, state, waypoints)
+            updateTrackAnnotation(
+                map = map,
+                state = state,
+                points = trackPoints
+            )
+            updateMeasurementAnnotations(
+                context = context,
+                map = map,
+                state = state,
+                points = measurementPoints
+            )
 
             if (state.lastRecenterToken != recenterToken) {
                 state.gestureActive = false
@@ -314,6 +340,8 @@ private fun applyStyle(
     styleJson: String?,
     location: Location,
     waypoints: List<Waypoint>,
+    trackPoints: List<TrackPoint>,
+    measurementPoints: List<Pair<Double, Double>>,
     mapView: MapView,
     initialScaleMeters: Double
 ) {
@@ -327,6 +355,11 @@ private fun applyStyle(
         state.waypointMarkers = emptyList()
         state.waypointByMarkerId.clear()
         state.waypointFingerprint = 0
+        state.trackPolyline = null
+        state.trackFingerprint = 0
+        state.measurementPolyline = null
+        state.measurementMarkers = emptyList()
+        state.measurementFingerprint = 0
 
         setupLocationPuck(
             context = context,
@@ -336,6 +369,17 @@ private fun applyStyle(
             followUser = state.followUser
         )
         updateWaypointAnnotations(context, map, state, waypoints)
+        updateTrackAnnotation(
+            map = map,
+            state = state,
+            points = trackPoints
+        )
+        updateMeasurementAnnotations(
+            context = context,
+            map = map,
+            state = state,
+            points = measurementPoints
+        )
 
         if (!state.initialCameraAnimationDone) {
             state.followUser = true
@@ -452,6 +496,176 @@ private fun enableNativeFollow(
 }
 
 @Suppress("DEPRECATION")
+private fun updateTrackAnnotation(
+    map: MapLibreMap,
+    state: NativeMapState,
+    points: List<TrackPoint>
+) {
+    val fingerprint =
+        points.size * 31 +
+            (points.lastOrNull()?.latitude?.hashCode() ?: 0) * 17 +
+            (points.lastOrNull()?.longitude?.hashCode() ?: 0)
+
+    if (fingerprint == state.trackFingerprint) return
+
+    state.trackPolyline?.let { line ->
+        runCatching { map.removePolyline(line) }
+    }
+    state.trackPolyline = null
+
+    if (points.size >= 2) {
+        @Suppress("DEPRECATION")
+        state.trackPolyline = map.addPolyline(
+            PolylineOptions()
+                .addAll(
+                    points.map {
+                        LatLng(
+                            it.latitude,
+                            it.longitude
+                        )
+                    }
+                )
+                .color(Color.rgb(255, 140, 0))
+                .width(6f)
+                .alpha(0.95f)
+        )
+    }
+
+    state.trackFingerprint = fingerprint
+}
+
+private fun updateMeasurementAnnotations(
+    context: Context,
+    map: MapLibreMap,
+    state: NativeMapState,
+    points: List<Pair<Double, Double>>
+) {
+    val fingerprint =
+        points.fold(1) { acc, point ->
+            31 * acc + point.hashCode()
+        }
+
+    if (fingerprint == state.measurementFingerprint) {
+        return
+    }
+
+    state.measurementPolyline?.let { line ->
+        runCatching { map.removePolyline(line) }
+    }
+    state.measurementPolyline = null
+
+    state.measurementMarkers.forEach { marker ->
+        runCatching { map.removeMarker(marker) }
+    }
+    state.measurementMarkers = emptyList()
+
+    if (points.size >= 2) {
+        @Suppress("DEPRECATION")
+        state.measurementPolyline = map.addPolyline(
+            PolylineOptions()
+                .addAll(
+                    points.take(2).map {
+                        LatLng(it.first, it.second)
+                    }
+                )
+                .color(Color.rgb(255, 235, 59))
+                .width(5f)
+                .alpha(1f)
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    state.measurementMarkers =
+        points.take(2).mapIndexed { index, point ->
+            val label = if (index == 0) "A" else "B"
+            map.addMarker(
+                MarkerOptions()
+                    .position(
+                        LatLng(
+                            point.first,
+                            point.second
+                        )
+                    )
+                    .icon(
+                        state.measurementIcons
+                            .getOrPut(label) {
+                                createMeasurementIcon(
+                                    context,
+                                    label
+                                )
+                            }
+                    )
+                    .title("Точка $label")
+            )
+        }
+
+    state.measurementFingerprint = fingerprint
+}
+
+@Suppress("DEPRECATION")
+private fun createMeasurementIcon(
+    context: Context,
+    label: String
+): Icon {
+    val density =
+        context.resources.displayMetrics.density
+    val size =
+        (38f * density).toInt().coerceAtLeast(38)
+
+    val bitmap = Bitmap.createBitmap(
+        size,
+        size,
+        Bitmap.Config.ARGB_8888
+    )
+    val canvas = Canvas(bitmap)
+
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(255, 235, 59)
+        style = Paint.Style.FILL
+    }
+    val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+    }
+
+    val radius = size * 0.42f
+    canvas.drawCircle(
+        size / 2f,
+        size / 2f,
+        radius,
+        fill
+    )
+    canvas.drawCircle(
+        size / 2f,
+        size / 2f,
+        radius,
+        border
+    )
+
+    val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        textAlign = Paint.Align.CENTER
+        textSize = 20f * density
+        typeface = Typeface.DEFAULT_BOLD
+    }
+
+    val fm = text.fontMetrics
+    val y =
+        size / 2f -
+            (fm.ascent + fm.descent) / 2f
+
+    canvas.drawText(
+        label,
+        size / 2f,
+        y,
+        text
+    )
+
+    return IconFactory.getInstance(context)
+        .fromBitmap(bitmap)
+}
+
 private fun updateWaypointAnnotations(
     context: Context,
     map: MapLibreMap,
