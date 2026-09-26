@@ -40,6 +40,8 @@ class GnssEngine(private val context: Context) : LocationListener {
     val satellites: StateFlow<SatelliteInfo> = _satellites.asStateFlow()
 
     private var started = false
+    private var gpsRegistered = false
+    private var networkRegistered = false
     private var statusRegistered = false
     private var desiredMode: PowerMode? = null
     private var mode = PowerMode.NORMAL
@@ -48,6 +50,7 @@ class GnssEngine(private val context: Context) : LocationListener {
 
     private var lastStableLocation: Location? = null
     private var lastAcceptedElapsedNs = 0L
+    private var lastGpsFixElapsedRealtimeMs = 0L
 
     private val clearSatellitesRunnable = Runnable {
         if (started &&
@@ -124,7 +127,9 @@ class GnssEngine(private val context: Context) : LocationListener {
     }
 
     @SuppressLint("MissingPermission")
-    private fun attemptStart(powerMode: PowerMode) {
+    private fun attemptStart(
+        powerMode: PowerMode
+    ) {
         if (desiredMode == null) return
         if (!hasFinePermission()) return
         if (started && powerMode == mode) return
@@ -133,57 +138,44 @@ class GnssEngine(private val context: Context) : LocationListener {
             stopInternal(clearUiLater = false)
         }
 
-        mainHandler.removeCallbacks(clearAfterStopRunnable)
-        mainHandler.removeCallbacks(retryStartRunnable)
+        mainHandler.removeCallbacks(
+            clearAfterStopRunnable
+        )
+        mainHandler.removeCallbacks(
+            retryStartRunnable
+        )
+
         mode = powerMode
 
-        var locationRegistered = false
+        // Do not make the UI wait for a fresh GNSS fix when Android already
+        // has a recent location from GPS/Wi-Fi/cell positioning.
+        publishBestRecentCachedLocation()
 
-        try {
-            manager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                mode.intervalMs,
-                mode.minDistanceM,
-                this,
-                Looper.getMainLooper()
+        gpsRegistered =
+            requestProviderSafely(
+                provider =
+                    LocationManager.GPS_PROVIDER,
+                intervalMs =
+                    mode.intervalMs,
+                minDistanceM =
+                    mode.minDistanceM
             )
-            locationRegistered = true
-            started = true
 
-            statusRegistered =
-                runCatching {
-                    if (
-                        android.os.Build.VERSION.SDK_INT >= 30
-                    ) {
-                        manager.registerGnssStatusCallback(
-                            context.mainExecutor,
-                            statusCallback
-                        )
-                    } else {
-                        @Suppress("DEPRECATION")
-                        manager.registerGnssStatusCallback(
-                            statusCallback
-                        )
-                    }
-                }.isSuccess
-        } catch (_: SecurityException) {
-            if (locationRegistered) {
-                runCatching {
-                    manager.removeUpdates(this)
-                }
-            }
-            started = false
-            statusRegistered = false
-        } catch (_: RuntimeException) {
-            if (locationRegistered) {
-                runCatching {
-                    manager.removeUpdates(this)
-                }
-            }
+        networkRegistered =
+            requestProviderSafely(
+                provider =
+                    LocationManager.NETWORK_PROVIDER,
+                intervalMs =
+                    NETWORK_INTERVAL_MS,
+                minDistanceM =
+                    NETWORK_MIN_DISTANCE_M
+            )
 
-            started = false
-            statusRegistered = false
+        started =
+            gpsRegistered ||
+                networkRegistered
 
+        if (!started) {
             if (
                 desiredMode != null &&
                 hasFinePermission()
@@ -193,7 +185,132 @@ class GnssEngine(private val context: Context) : LocationListener {
                     START_RETRY_DELAY_MS
                 )
             }
+            return
         }
+
+        statusRegistered =
+            runCatching {
+                if (
+                    android.os.Build.VERSION.SDK_INT >= 30
+                ) {
+                    manager.registerGnssStatusCallback(
+                        context.mainExecutor,
+                        statusCallback
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    manager.registerGnssStatusCallback(
+                        statusCallback
+                    )
+                }
+            }.isSuccess
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestProviderSafely(
+        provider: String,
+        intervalMs: Long,
+        minDistanceM: Float
+    ): Boolean {
+        val enabled =
+            runCatching {
+                manager.isProviderEnabled(provider)
+            }.getOrDefault(false)
+
+        if (!enabled) return false
+
+        return runCatching {
+            manager.requestLocationUpdates(
+                provider,
+                intervalMs,
+                minDistanceM,
+                this,
+                Looper.getMainLooper()
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun publishBestRecentCachedLocation() {
+        val nowElapsedNs =
+            SystemClock.elapsedRealtimeNanos()
+
+        val candidates =
+            listOf(
+                LocationManager.GPS_PROVIDER,
+                LocationManager.NETWORK_PROVIDER
+            ).mapNotNull { provider ->
+                runCatching {
+                    manager.getLastKnownLocation(
+                        provider
+                    )
+                }.getOrNull()
+            }.filter { location ->
+                isUsableBootstrapLocation(
+                    location,
+                    nowElapsedNs
+                )
+            }
+
+        val best =
+            candidates.minWithOrNull(
+                compareBy<Location>(
+                    { accuracyOrDefault(it) },
+                    { -it.time }
+                )
+            )
+                ?: return
+
+        if (
+            best.provider ==
+            LocationManager.GPS_PROVIDER
+        ) {
+            _rawLocation.value =
+                Location(best)
+            lastGpsFixElapsedRealtimeMs =
+                SystemClock.elapsedRealtime()
+        }
+
+        acceptDisplayLocation(
+            Location(best),
+            force = _location.value == null
+        )
+    }
+
+    private fun isUsableBootstrapLocation(
+        location: Location,
+        nowElapsedNs: Long
+    ): Boolean {
+        if (
+            !location.latitude.isFinite() ||
+            !location.longitude.isFinite()
+        ) {
+            return false
+        }
+
+        val ageMs =
+            if (
+                location.elapsedRealtimeNanos > 0L &&
+                nowElapsedNs >
+                    location.elapsedRealtimeNanos
+            ) {
+                (
+                    nowElapsedNs -
+                        location.elapsedRealtimeNanos
+                    ) /
+                    1_000_000L
+            } else {
+                (
+                    System.currentTimeMillis() -
+                        location.time
+                    ).coerceAtLeast(0L)
+            }
+
+        return ageMs <=
+            CACHED_LOCATION_MAX_AGE_MS &&
+            accuracyOrDefault(location) <=
+                CACHED_LOCATION_MAX_ACCURACY_M
     }
 
     fun stop() {
@@ -228,6 +345,8 @@ class GnssEngine(private val context: Context) : LocationListener {
         }
 
         started = false
+        gpsRegistered = false
+        networkRegistered = false
         statusRegistered = false
 
         mainHandler.removeCallbacks(clearSatellitesRunnable)
@@ -241,17 +360,75 @@ class GnssEngine(private val context: Context) : LocationListener {
         }
     }
 
-    override fun onLocationChanged(location: Location) {
-        if (location.provider != LocationManager.GPS_PROVIDER) return
+    override fun onLocationChanged(
+        location: Location
+    ) {
+        when (location.provider) {
+            LocationManager.GPS_PROVIDER -> {
+                val raw =
+                    Location(location)
 
-        val raw = Location(location)
-        _rawLocation.value = raw
+                _rawLocation.value = raw
+                lastGpsFixElapsedRealtimeMs =
+                    SystemClock.elapsedRealtime()
 
-        stabilize(raw)?.let { stable ->
-            lastStableLocation = stable
-            lastAcceptedElapsedNs = raw.elapsedRealtimeNanos
-            _location.value = stable
+                acceptDisplayLocation(raw)
+            }
+
+            LocationManager.NETWORK_PROVIDER -> {
+                val accuracy =
+                    accuracyOrDefault(location)
+
+                if (
+                    accuracy >
+                    NETWORK_MAX_ACCURACY_M
+                ) {
+                    return
+                }
+
+                val gpsAgeMs =
+                    if (
+                        lastGpsFixElapsedRealtimeMs > 0L
+                    ) {
+                        SystemClock.elapsedRealtime() -
+                            lastGpsFixElapsedRealtimeMs
+                    } else {
+                        Long.MAX_VALUE
+                    }
+
+                // Network/Wi-Fi/cell location is only a fast bootstrap/fallback.
+                // A recent GNSS fix always wins and will not be overwritten.
+                if (
+                    _location.value == null ||
+                    gpsAgeMs >=
+                        GPS_FALLBACK_AFTER_MS
+                ) {
+                    acceptDisplayLocation(
+                        Location(location),
+                        force =
+                            _location.value == null
+                    )
+                }
+            }
         }
+    }
+
+    private fun acceptDisplayLocation(
+        candidate: Location,
+        force: Boolean = false
+    ) {
+        val stable =
+            if (force) {
+                Location(candidate)
+            } else {
+                stabilize(candidate)
+            } ?: return
+
+        lastStableLocation = stable
+        lastAcceptedElapsedNs =
+            candidate.elapsedRealtimeNanos
+
+        _location.value = stable
     }
 
     private fun stabilize(candidate: Location): Location? {
@@ -348,6 +525,17 @@ class GnssEngine(private val context: Context) : LocationListener {
 
     companion object {
         private const val START_RETRY_DELAY_MS = 1_200L
+
+        private const val NETWORK_INTERVAL_MS = 1_500L
+        private const val NETWORK_MIN_DISTANCE_M = 0f
+        private const val NETWORK_MAX_ACCURACY_M = 250.0
+        private const val GPS_FALLBACK_AFTER_MS = 15_000L
+
+        private const val CACHED_LOCATION_MAX_AGE_MS =
+            5L * 60L * 1_000L
+        private const val CACHED_LOCATION_MAX_ACCURACY_M =
+            250.0
+
         private const val SATELLITE_ZERO_GRACE_MS = 6_000L
         private const val SATELLITE_STOP_GRACE_MS = 3_000L
 

@@ -129,3 +129,12 @@ Local layers use zero raster fade and therefore paint as soon as MapLibre reads 
 If no completed region covers the current GPS fix, the previous behavior remains: validated internet uses the online style and no internet uses the empty style.
 
 Waypoint deletion is UI-confirmed before AppViewModel.deleteWaypoint() is invoked.
+
+
+## 1.8.5 fast location bootstrap
+
+GnssEngine now registers both GPS_PROVIDER and NETWORK_PROVIDER. It first publishes the best recent last-known fix (<=5 minutes old and <=250 m accuracy), then requests both providers concurrently.
+
+NETWORK_PROVIDER is presentation bootstrap/fallback only. GPS updates populate rawLocation and update the display immediately; once a GPS fix is recent, network callbacks are ignored for 15 seconds. This gives fast indoor/cold-start map positioning without contaminating PreciseFixCollector, which still consumes only raw GPS fixes.
+
+Provider registration remains individually guarded so an unavailable OEM network provider cannot break GPS startup.
